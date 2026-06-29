@@ -1,0 +1,31 @@
+const express = require("express");
+const router = express.Router();
+const ADODB = require("node-adodb");
+const dbAccess = require("../../dbaccess");
+
+const connection = ADODB.open(dbAccess);
+
+router.post("/", async (req, res) => {
+    try {
+        // Query per la prima tabella
+        const query1 = "SELECT TOP 1 NUMEROCOMUNICAZIONE FROM [Q-02-T-COMUNICAZIONI] ORDER BY [NUMEROCOMUNICAZIONE] DESC";
+        const data1 = await connection.query(query1);
+        const num1 = data1.length > 0 ? data1[0].NUMEROCOMUNICAZIONE : 0;
+
+        // Query per la seconda tabella
+        const query2 = "SELECT TOP 1 NUMEROCOMUNICAZIONE FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] ORDER BY [NUMEROCOMUNICAZIONE] DESC";
+        const data2 = await connection.query(query2);
+        const num2 = data2.length > 0 ? data2[0].NUMEROCOMUNICAZIONE : 0;
+
+        // Determina il numero più alto
+        const numeroMaggiore = Math.max(num1, num2);
+
+        res.json({ numero_comunicazione_maggiore: numeroMaggiore });
+
+    } catch (err) {
+        console.error("Errore nel database:", err);
+        res.status(500).json({ error: "Errore nell'esecuzione della query" });
+    }
+});
+
+module.exports = router;

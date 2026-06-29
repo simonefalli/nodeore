@@ -1,0 +1,5 @@
+/logs
+/upload
+/rimborsi
+.env
+node_modules
