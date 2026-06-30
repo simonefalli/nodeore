@@ -1,16 +1,17 @@
 const mysql = require('mysql');
 
+// Database connection parameters
+const host = process.env.DB_HOST || "127.0.0.1";
+const user = process.env.DB_USER || "root";
+const database = process.env.DB_NAME || "ore";
 
-// Database connection
-
-
+console.log(`[MySQL Connection Config] Host: ${host}, User: ${user}, Database: ${database}`);
 
 const pool = mysql.createPool({
-    host: process.env.DB_HOST || "192.168.1.200",
-    user: process.env.DB_USER || "ies",
+    host: host,
+    user: user,
     password: process.env.DB_PASSWORD || process.env.DB_PASS || "Qazwsx12.",
-    database: process.env.DB_NAME || "ore",
-  });
+    database: database,
+});
 
-
-  module.exports = pool
+module.exports = pool;
