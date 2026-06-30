@@ -1,0 +1,22 @@
+CREATE TABLE `impiantitestCiesse` (
+  `id` int(255) NOT NULL AUTO_INCREMENT,
+  `numeroimpianto` int(255) NOT NULL,
+  `nome` varchar(255) DEFAULT NULL,
+  `note` varchar(3000) DEFAULT NULL,
+  `numerotelefono` varchar(255) DEFAULT NULL,
+  `ragionesociale` varchar(255) DEFAULT NULL,
+  `luogoimpianto` varchar(255) DEFAULT NULL,
+  `localita` varchar(255) DEFAULT NULL,
+  `provincia` varchar(255) DEFAULT NULL,
+  `tipoimpianto` varchar(255) DEFAULT NULL,
+  `tipocontratto` varchar(255) DEFAULT NULL,
+  `mit` varchar(3000) DEFAULT NULL,
+  `noncomformita` varchar(3000) DEFAULT NULL,
+  `idnoncomformita` int(255) DEFAULT NULL,
+  `datenonconformita` date DEFAULT NULL,
+  `ciframensile` varchar(50) DEFAULT '0',
+  `partitaiva` varchar(50) DEFAULT '',
+  `codicefiscale` varchar(50) DEFAULT '',
+  PRIMARY KEY (`id`),
+  KEY `indice_impianti` (`numeroimpianto`)
+) ENGINE=InnoDB AUTO_INCREMENT=9755 DEFAULT CHARSET=latin1;

@@ -1,10 +1,11 @@
+require('dotenv').config();
 const express = require('express');
 const app = express();
 const ADODB = require('node-adodb');
 const cors = require('cors');
 
-//const connection = ADODB.open('Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\\TUTTEBASIDATIATTIVE\\I&S-BASEDATI.accdb;Persist Security Info=False;Jet OLEDB:Database Password=celinedarma;');
-const connection = ADODB.open('Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\\Users\\simone\\Desktop\\Lavoro\\TUTTEBASIDATIATTIVE\\I&S-BASEDATI.accdb;Persist Security Info=False;Jet OLEDB:Database Password=celinedarma;');
+const is64Bit = process.env.ACCESS_64BIT === 'true';
+const connection = ADODB.open('Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\\Users\\simone\\Desktop\\Lavoro\\TUTTEBASIDATIATTIVE\\I&S-BASEDATI.accdb;Persist Security Info=False;Jet OLEDB:Database Password=celinedarma;', is64Bit);
 app.use(express.json());
 app.use(cors());
 

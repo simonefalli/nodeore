@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bodyParser = require("body-parser");
@@ -77,15 +78,16 @@ app.post('/upload', upload.single('photo'), (req, res ,next) => {
 app.use(bodyParser.urlencoded({ extended: true }));
 //app.set('case sensitive routing', true);
 
-app.listen(5000, (req, res) => {
-  console.log("Avvio del server sulla porta 5000");
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, (req, res) => {
+  console.log("Avvio del server sulla porta " + PORT);
 
   // Esegue aggiornaDb() ogni giorno alle 23:00
   cron.schedule("0 21 * * *", async () => {
     console.log("Esecuzione aggiornaDb() programmata alle 23:00");
     try {
       await aggiornaDb();
-      console.log("Aggiornamento completato con successo");
+      console.log("Aggiornamento database completato con successo per entrambe le aziende");
     } catch (err) {
       console.error("Errore nell’aggiornamento programmato:", err);
     }

@@ -1,13 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const verifyToken = require("../../verifytoken");
-const dbAccess = require("../../dbaccess");
-const ADODB = require("node-adodb");
-const connection = ADODB.open(dbAccess);
+const dbaccess = require("../../dbaccess");
 
 router.use(verifyToken);
 
 router.get('/aperti', async (req, res) => {
+    const connection = dbaccess.getConnection(req);
     
     const sql = `
         SELECT 
@@ -38,6 +37,7 @@ router.get('/aperti', async (req, res) => {
  * Rotta 2: Dettaglio Ordine e Materiali
  */
 router.get('/:id', async (req, res) => {
+    const connection = dbaccess.getConnection(req);
     const orderId = req.params.id;
 
     try {

@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const verifyToken = require('../../verifytoken');
-const ADODB = require('node-adodb');
-const dbAccess = require('../../dbaccess');
-const connection = ADODB.open(dbAccess);
+const dbaccess = require('../../dbaccess');
 
 
 //router.use(verifyToken);
 
 router.get('/:impianto', (req, res) => {
+    const connection = dbaccess.getConnection(req);
     impianto = req.params.impianto;
     //impianto = impianto.replace(/_/g, "\\_").replace(/%/g, "\\%");
     impianto = impianto.toLowerCase();

@@ -1,4 +1,3 @@
-
 const mysql = require('mysql');
 
 
@@ -7,10 +6,10 @@ const mysql = require('mysql');
 
 
 const pool = mysql.createPool({
-    host: "192.168.25.99",
-    user: "ies",
-    password: "Qazwsx12.",
-    database: "ore",
+    host: process.env.DB_HOST || "192.168.1.200",
+    user: process.env.DB_USER || "ies",
+    password: process.env.DB_PASSWORD || process.env.DB_PASS || "Qazwsx12.",
+    database: process.env.DB_NAME || "ore",
   });
 
 

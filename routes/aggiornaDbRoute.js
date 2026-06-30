@@ -6,7 +6,7 @@ const { aggiornaDb, getProgress } = require('../aggiornaDb');
 router.get('/start', async (req, res) => {
   try {
     console.log('aggiornadb');
-    aggiornaDb(); // non uso await -> parte in background
+    aggiornaDb(); // non uso await -> parte in background e aggiorna entrambe le aziende
     res.json({ message: 'Aggiornamento avviato' });
   } catch (err) {
     console.error('Errore aggiornamento DB:', err);

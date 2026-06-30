@@ -1,9 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const verifyToken = require('../../verifytoken');
-const ADODB = require('node-adodb');
-const dbAccess = require('../../dbaccess');
-const connection = ADODB.open(dbAccess);
+const dbaccess = require('../../dbaccess');
 
 
 //router.use(verifyToken);
@@ -12,6 +10,7 @@ const connection = ADODB.open(dbAccess);
 
 
 router.get('/:impianto', (req, res) => {
+    const connection = dbaccess.getConnection(req);
     let impianto = req.params.impianto;
     
     //impianto = impianto.replace(/_/g, "\\_").replace(/%/g, "\\%");

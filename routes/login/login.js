@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require("jsonwebtoken");
 const pool = require('../../db')
 const router = express.Router();
-const secretKey = "ilTuoSegretoSuperSicuroIngegneriaeSistemi";
+const secretKey = process.env.JWT_SECRET || "ilTuoSegretoSuperSicuroIngegneriaeSistemi";
 
 router.post("/", (req, res) => {
     utente = req.body.utente;

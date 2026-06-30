@@ -1,13 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const verifyToken = require("../../verifytoken");
-const dbAccess = require("../../dbaccess");
-const ADODB = require("node-adodb");
-const connection = ADODB.open(dbAccess);
+const dbaccess = require("../../dbaccess");
 
 router.use(verifyToken);
 
 router.get("/", (req, res) => {
+  const connection = dbaccess.getConnection(req);
   const id = req.params.id;
 
   const query = "SELECT * FROM [Q-01-T-COMUNICAZIONIDAGESTIRE]";
@@ -25,7 +24,7 @@ router.get("/", (req, res) => {
 
 // Rotta per aggiungere una chiamata
 router.post("/", async (req, res) => {
-  
+  const connection = dbaccess.getConnection(req);
   const motivochiamata = req.body.data.motivochiamata; // Sostituisci con i nomi dei tuoi campi
   const assegnataa = req.body.data.assegnataa;
   const numeroImpianto = req.body.numeroImpianto;
@@ -59,6 +58,7 @@ router.post("/", async (req, res) => {
 
 // Rotta per modificare una chiamata
 router.put("/:id", (req, res) => {
+  const connection = dbaccess.getConnection(req);
   const id = req.params.id;
   const { campo1, campo2, campo3 } = req.body; // Sostituisci con i nomi dei tuoi campi
 
@@ -79,6 +79,7 @@ router.put("/:id", (req, res) => {
 
 // Get chimate impianto
 router.get("/:id", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
   try {
     const id = req.params.id;
 
@@ -122,7 +123,7 @@ router.get("/:id", async (req, res) => {
 
 // DESCRIZIONE CHIAMATA
 router.get("/descrizionechiamata/:id", async (req, res) => {
-  
+  const connection = dbaccess.getConnection(req);
   try {
     const id = req.params.id;
 
@@ -151,6 +152,7 @@ router.get("/descrizionechiamata/:id", async (req, res) => {
 
 // Rotta Bulk per velocizzare PHP
 router.get("/descrizioni-bulk/:ids", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
   try {
     const ids = req.params.ids; // Esempio: "101,102,103"
     // Validazione basica per evitare SQL Injection su Access

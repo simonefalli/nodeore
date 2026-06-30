@@ -1,12 +1,8 @@
 const express = require("express");
 const router = express.Router();
-const ADODB = require("node-adodb");
-const dbAccess = require("../../dbaccess");
+const dbaccess = require("../../dbaccess");
 const fs = require("fs");
 const path = require("path");
-
-// Connessione al database
-const connection = ADODB.open(dbAccess);
 
 const truncate = (str, maxLen) => str && typeof str === "string" ? str.substring(0, maxLen) : str;
 
@@ -34,7 +30,7 @@ const formatValue = (value, type) => {
 };
 
 router.post("/", async (req, res) => {
-
+  const connection = dbaccess.getConnection(req);
   let isNuova = false;
 
   try {

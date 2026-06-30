@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const secretKey = "ilTuoSegretoSuperSicuroIngegneriaeSistemi";
+const secretKey = process.env.JWT_SECRET || "ilTuoSegretoSuperSicuroIngegneriaeSistemi";
 
 // Definiamo una whitelist di IP autorizzati
 const IP_WHITELIST = [
@@ -43,6 +43,7 @@ function verifyToken(req, res, next) {
       // Questo controllo manuale è un ulteriore livello di sicurezza.
       if (currentTime < expirationTime) {
         req.token = bearerToken;
+        req.user = decoded ? decoded.user : null; // Allega l'utente alla richiesta
         next();
       } else {
         res.sendStatus(403);
