@@ -1,0 +1,36 @@
+
+C:\Users\simone\Desktop\Node>nodemon
+[nodemon] 3.0.3
+[nodemon] to restart at any time, enter `rs`
+[nodemon] watching path(s): *.*
+[nodemon] watching extensions: js,mjs,cjs,json
+[nodemon] starting `node index.js`
+◇ injected env (10) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+[MySQL Connection Config] Host: 192.168.25.99, User: ies, Database: ore
+--- DEBUG ADODB CONFIG ---
+ACCESS_64BIT env value: undefined
+Resolved is64Bit: false
+--------------------------
+Avvio del server sulla porta 5000
+Error: Spawn C:\Windows\SysWOW64\cscript.exe error
+    at ChildProcess.<anonymous> (C:\Users\simone\Desktop\Node\node_modules\node-adodb\lib\spawn.js:120:37)
+    at ChildProcess.emit (node:events:518:28)
+    at maybeClose (node:internal/child_process:1105:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:305:5) {
+  process: {
+    code: -2147467259,
+    message: "Formato di database 'C:\\TUTTEBASIDATIATTIVE\\BASIDATI\\I&S-BASEDATI.accdb' non riconosciuto."
+  },
+  exitCode: 0
+}
+Error: Spawn C:\Windows\SysWOW64\cscript.exe error
+    at ChildProcess.<anonymous> (C:\Users\simone\Desktop\Node\node_modules\node-adodb\lib\spawn.js:120:37)
+    at ChildProcess.emit (node:events:518:28)
+    at maybeClose (node:internal/child_process:1105:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:305:5) {
+  process: {
+    code: -2147467259,
+    message: "Formato di database 'C:\\TUTTEBASIDATIATTIVE\\BASIDATI\\I&S-BASEDATI.accdb' non riconosciuto."
+  },
+  exitCode: 0
+}

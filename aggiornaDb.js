@@ -13,17 +13,26 @@ function confrontoCampi(a, b) {
   // Se entrambi null => uguali
   if (a === null && b === null) return true;
 
-  // Se entrambi numerici (gestione virgole decimali)
-  const numA = parseFloat(String(a).replace(",", "."));
-  const numB = parseFloat(String(b).replace(",", "."));
-  if (!isNaN(numA) && !isNaN(numB)) {
+  // Se uno è null e l'altro no => diversi
+  if (a === null || b === null) return false;
+
+  // Converte in stringhe ripulite
+  const strA = String(a).trim();
+  const strB = String(b).trim();
+
+  // Controlla se entrambe le stringhe sono realmente numeriche
+  // (ammette interi o decimali con . o ,)
+  const regexNumero = /^-?\d+(?:[.,]\d+)?$/;
+
+  if (regexNumero.test(strA) && regexNumero.test(strB)) {
+    const numA = parseFloat(strA.replace(",", "."));
+    const numB = parseFloat(strB.replace(",", "."));
     return numA === numB;
   }
 
-  // Confronto stringhe "ripulite"
-  return String(a).trim() === String(b).trim();
+  // Altrimenti confronto testuale esatto
+  return strA === strB;
 }
-
 function getProgress() {
   return progress;
 }
