@@ -14,9 +14,33 @@ console.log('ACCESS_64BIT env value:', process.env.ACCESS_64BIT);
 console.log('Resolved is64Bit:', is64Bit);
 console.log('--------------------------');
 
-// Pre-initialize both connections at startup
-const connectionIS = ADODB.open(`Provider=Microsoft.ACE.OLEDB.12.0;Data Source=${pathIS};Persist Security Info=False;Jet OLEDB:Database Password=${passwordIS};`, is64Bit);
-const connectionCiesse = ADODB.open(`Provider=Microsoft.ACE.OLEDB.12.0;Data Source=${pathCiesse};Persist Security Info=False;Jet OLEDB:Database Password=${passwordCiesse};`, is64Bit);
+// 1. Aggiunto "Mode=Share Deny None;" per allentare i blocchi sul file Access
+const rawConnectionIS = ADODB.open(`Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${pathIS};Mode=Share Deny None;Persist Security Info=False;Jet OLEDB:Database Password=${passwordIS};`, is64Bit);
+const rawConnectionCiesse = ADODB.open(`Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${pathCiesse};Mode=Share Deny None;Persist Security Info=False;Jet OLEDB:Database Password=${passwordCiesse};`, is64Bit);
+
+// 2. Vigile per la Coda (Mutex). Forza Node.js ad eseguire una query Access alla volta.
+let dbLock = Promise.resolve();
+
+function safeConnection(adodbConn) {
+  return {
+    query: (sql) => {
+      // Accoda la query attuale finché quella precedente non ha finito
+      const p = dbLock.then(() => adodbConn.query(sql));
+      // Evita che un errore in una query blocchi per sempre la coda
+      dbLock = p.catch(() => {}); 
+      return p; // Restituisce la promise originale alla rotta che l'ha chiamata
+    },
+    execute: (sql) => {
+      const p = dbLock.then(() => adodbConn.execute(sql));
+      dbLock = p.catch(() => {});
+      return p;
+    }
+  };
+}
+
+// Avvolgiamo le connessioni raw nel nostro sistema a coda
+const connectionIS = safeConnection(rawConnectionIS);
+const connectionCiesse = safeConnection(rawConnectionCiesse);
 
 /**
  * Restituisce la connessione in base al parametro azienda (stringa/numero o oggetto req).

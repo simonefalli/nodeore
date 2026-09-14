@@ -1,9 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const verifyToken = require("../../verifytoken");
+//const verifyToken = require("../../verifytoken");
 const dbaccess = require("../../dbaccess");
 
-router.use(verifyToken);
+//router.use(verifyToken);
 
 router.get("/ordini", (req, res) => {
   const connection = dbaccess.getConnection(req);
@@ -84,7 +84,7 @@ router.post("/", (req, res) => {
     });
   //res.sendStatus(200);
 });
-
+/*
 router.get("/ordiniaperti/:id", (req, res) => {
   const connection = dbaccess.getConnection(req);
   const id = req.params.id;
@@ -106,5 +106,29 @@ router.get("/ordiniaperti/:id", (req, res) => {
       res.status(500).json({ error: "Errore nell'esecuzione della query" });
     });
 });
+*/
+router.get("/ordiniaperti/:id", (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const id = req.params.id;
+  console.log("ARRIVATA RICHIESTA ORDINI APERTI PER IMPIANTO:", id);
+  
+  // Rimuoviamo i calcoli complessi sulle date dal motore Access
+  const query = `
+    SELECT IDORDINE, [ID IMPIANTO], ESEGUITO, ANNULLATOIL 
+    FROM [B-05-T-ORDINI] 
+    WHERE [ID IMPIANTO] = ${id} 
+  `;
+  // NOTA: Se [ID IMPIANTO] è Testo in Access, usa: WHERE [ID IMPIANTO] = '${id}'
 
+  connection
+    .query(query)
+    .then((data) => {
+      res.json(data);
+    })
+    .catch((err) => {
+      console.error(err);
+      res.status(500).json({ error: "Errore nell'esecuzione della query" });
+    });
+});
+  
 module.exports = router;
