@@ -1,4 +1,4 @@
-const ADODB = require('node-adodb');
+const odbc = require('odbc');
 
 // In local dev, load paths from env or use default fallback. In production, load from env.
 const pathIS = process.env.ACCESS_PATH_IS || 'C:\\Users\\simone\\Desktop\\datiditest\\TUTTEBASIDATIATTIVE\\I&S-BASEDATI.accdb';
@@ -7,55 +7,89 @@ const pathCiesse = process.env.ACCESS_PATH_CIESSE || 'C:\\Users\\Simone\\Desktop
 const passwordIS = process.env.ACCESS_PASSWORD_IS || 'celinedarma';
 const passwordCiesse = process.env.ACCESS_PASSWORD_CIESSE || 'celinedarma';
 
-// Check if 64-bit connection is requested via env (default to false to preserve server setup)
-const is64Bit = process.env.ACCESS_64BIT === 'true';
-console.log('--- DEBUG ADODB CONFIG ---');
-console.log('ACCESS_64BIT env value:', process.env.ACCESS_64BIT);
-console.log('Resolved is64Bit:', is64Bit);
+const connStrIS = `Driver={Microsoft Access Driver (*.mdb, *.accdb)};Dbq=${pathIS};Uid=Admin;Pwd=${passwordIS};`;
+const connStrCiesse = `Driver={Microsoft Access Driver (*.mdb, *.accdb)};Dbq=${pathCiesse};Uid=Admin;Pwd=${passwordCiesse};`;
+
+console.log('--- ODBC ACCESS CONFIG ---');
+console.log('Path I&S:', pathIS);
+console.log('Path Ciesse:', pathCiesse);
 console.log('--------------------------');
 
-// 1. Aggiunto "Mode=Share Deny None;" per allentare i blocchi sul file Access
-const rawConnectionIS = ADODB.open(`Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${pathIS};Mode=Share Deny None;Persist Security Info=False;Jet OLEDB:Database Password=${passwordIS};`, is64Bit);
-const rawConnectionCiesse = ADODB.open(`Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${pathCiesse};Mode=Share Deny None;Persist Security Info=False;Jet OLEDB:Database Password=${passwordCiesse};`, is64Bit);
+let poolIS = null;
+let poolPromiseIS = null;
+let poolCiesse = null;
+let poolPromiseCiesse = null;
 
-// 2. Vigile per la Coda (Mutex). Forza Node.js ad eseguire una query Access alla volta.
-let dbLock = Promise.resolve();
+async function getPoolIS() {
+  if (poolIS) return poolIS;
+  if (!poolPromiseIS) {
+    poolPromiseIS = odbc.pool(connStrIS)
+      .then(p => {
+        poolIS = p;
+        console.log('[ODBC] Pool I&S connesso con successo');
+        return p;
+      })
+      .catch(err => {
+        poolPromiseIS = null;
+        console.error('[ODBC] Errore connessione pool I&S:', err.message || err);
+        throw err;
+      });
+  }
+  return poolPromiseIS;
+}
 
-function safeConnection(adodbConn) {
+async function getPoolCiesse() {
+  if (poolCiesse) return poolCiesse;
+  if (!poolPromiseCiesse) {
+    poolPromiseCiesse = odbc.pool(connStrCiesse)
+      .then(p => {
+        poolCiesse = p;
+        console.log('[ODBC] Pool CIESSE connesso con successo');
+        return p;
+      })
+      .catch(err => {
+        poolPromiseCiesse = null;
+        console.error('[ODBC] Errore connessione pool CIESSE:', err.message || err);
+        throw err;
+      });
+  }
+  return poolPromiseCiesse;
+}
+
+// Inizializzazione anticipata dei pool in background all'avvio
+getPoolIS().catch(() => {});
+getPoolCiesse().catch(() => {});
+
+function createConnectionWrapper(getPool) {
   return {
-    query: (sql) => {
-      // Accoda la query attuale finché quella precedente non ha finito
-      const p = dbLock.then(() => adodbConn.query(sql));
-      // Evita che un errore in una query blocchi per sempre la coda
-      dbLock = p.catch(() => {}); 
-      return p; // Restituisce la promise originale alla rotta che l'ha chiamata
+    query: async (sql) => {
+      const pool = await getPool();
+      return pool.query(sql);
     },
-    execute: (sql) => {
-      const p = dbLock.then(() => adodbConn.execute(sql));
-      dbLock = p.catch(() => {});
-      return p;
+    execute: async (sql) => {
+      const pool = await getPool();
+      return pool.query(sql);
     }
   };
 }
 
-// Avvolgiamo le connessioni raw nel nostro sistema a coda
-const connectionIS = safeConnection(rawConnectionIS);
-const connectionCiesse = safeConnection(rawConnectionCiesse);
+const connectionIS = createConnectionWrapper(getPoolIS);
+const connectionCiesse = createConnectionWrapper(getPoolCiesse);
 
 /**
  * Restituisce la connessione in base al parametro azienda (stringa/numero o oggetto req).
  * Se non viene specificata l'azienda o non corrisponde a 'ciesse', fa fallback su 'I&S'.
  * @param {string|number|object} azienda 
- * @returns {object} Connessione ADODB
+ * @returns {object} Connessione ODBC
  */
 function getConnection(azienda) {
   let name = '';
   
   if (azienda && typeof azienda === 'object') {
     // Estrazione da headers, query, body o token JWT (req.user)
-    name = azienda.headers['x-azienda'] || 
-           azienda.query.azienda || 
-           azienda.body.azienda || 
+    name = (azienda.headers && azienda.headers['x-azienda']) || 
+           (azienda.query && azienda.query.azienda) || 
+           (azienda.body && azienda.body.azienda) || 
            (azienda.user && (azienda.user.azienda || azienda.user.idAzienda)) || 
            '';
   } else if (typeof azienda === 'string' || typeof azienda === 'number') {
