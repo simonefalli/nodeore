@@ -112,11 +112,12 @@ router.get("/ordiniaperti/:id", (req, res) => {
   const id = req.params.id;
   console.log("ARRIVATA RICHIESTA ORDINI APERTI PER IMPIANTO:", id);
   
-  // Rimuoviamo i calcoli complessi sulle date dal motore Access
   const query = `
     SELECT IDORDINE, [ID IMPIANTO], ESEGUITO, ANNULLATOIL 
     FROM [B-05-T-ORDINI] 
     WHERE [ID IMPIANTO] = ${id} 
+      AND (ESEGUITO IS NULL OR ESEGUITO <= #1970-01-01#) 
+      AND (ANNULLATOIL IS NULL OR ANNULLATOIL <= #1970-01-01#)
   `;
   // NOTA: Se [ID IMPIANTO] è Testo in Access, usa: WHERE [ID IMPIANTO] = '${id}'
 
