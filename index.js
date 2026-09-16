@@ -32,6 +32,7 @@ const chiudichiamatadaphp = require("./routes/chiamate/chiudichiamatadaphp");
 const aggiornaDbRoute = require("./routes/aggiornaDbRoute");
 const ordiniRoute = require('./routes/ordini/ordini');
 const preventiviRoute = require('./routes/preventivi/preventivi');
+const contabilitaRoute = require('./routes/contabilita/contabilita');
 app.use(
   cors({
     origin: "*",
@@ -63,6 +64,7 @@ app.use("/chiudichiamatadaphp", chiudichiamatadaphp);
 app.use("/aggiorna", aggiornaDbRoute);
 app.use("/ordini" , ordiniRoute);
 app.use("/preventivi", preventiviRoute);
+app.use("/contabilita", contabilitaRoute);
 /*
 
 app.post('/upload', upload.single('photo'), (req, res ,next) => {
