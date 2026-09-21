@@ -170,7 +170,28 @@ router.get("/situazione/:idcaf", async (req, res) => {
     }
 
     // Calcoli totali e partizionamento Scaduti vs Futuri
-    const totFatture = fatture.reduce((acc, f) => acc + (Number(f.TOTALE) || 0), 0);
+    let totFattureLordo = 0;
+    let totNoteCredito = 0;
+    let conteggioFatturePositive = 0;
+    let conteggioNoteCredito = 0;
+
+    fatture.forEach((f) => {
+      const imp = Number(f.TOTALE) || 0;
+      const isNC = parseInt(f.TIPODOCUMENTO, 10) === 2;
+      f.isNotaCredito = isNC;
+      f.tipoDocumentoLabel = isNC ? "NC" : "FT";
+
+      if (isNC) {
+        totNoteCredito += imp;
+        conteggioNoteCredito++;
+      } else {
+        totFattureLordo += imp;
+        conteggioFatturePositive++;
+      }
+    });
+
+    const totFattureNetto = totFattureLordo - totNoteCredito;
+
     const totEntrateBanca = banca.reduce((acc, b) => acc + (Number(b.ENTRATE) || 0), 0);
     const totUsciteBanca = banca.reduce((acc, b) => acc + (Number(b.USCITE) || 0), 0);
     const nettoBanca = totEntrateBanca - totUsciteBanca;
@@ -192,15 +213,20 @@ router.get("/situazione/:idcaf", async (req, res) => {
       }
     });
 
-    const differenzaFattureBanca = totFatture - nettoBanca;
+    const differenzaFattureBanca = totFattureNetto - nettoBanca;
     const totCreditiPerdita = creditiPerdita.reduce((acc, c) => acc + (Number(c.IMPORTOCREDITOSOFFERENZA) || 0), 0);
 
     res.json({
       cliente,
       dataRiferimento: dataRif,
       riepilogo: {
-        totaleFatture: totFatture,
+        totaleFatture: totFattureNetto,
+        totaleFattureLordo: totFattureLordo,
+        totaleNoteCredito: totNoteCredito,
+        totaleFattureNetto: totFattureNetto,
         conteggioFatture: fatture.length,
+        conteggioFatturePositive: conteggioFatturePositive,
+        conteggioNoteCredito: conteggioNoteCredito,
         totaleBanca: nettoBanca,
         conteggioBanca: banca.length,
         differenzaFattureBanca,
