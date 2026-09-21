@@ -110,16 +110,28 @@ router.get("/ordiniaperti/:id", (req, res) => {
 router.get("/ordiniaperti/:id", (req, res) => {
   const connection = dbaccess.getConnection(req);
   const id = req.params.id;
-  console.log("ARRIVATA RICHIESTA ORDINI APERTI PER IMPIANTO:", id);
   
   const query = `
-    SELECT IDORDINE, [ID IMPIANTO], ESEGUITO, ANNULLATOIL 
-    FROM [B-05-T-ORDINI] 
-    WHERE [ID IMPIANTO] = ${id} 
-      AND (ESEGUITO IS NULL OR ESEGUITO <= #1970-01-01#) 
-      AND (ANNULLATOIL IS NULL OR ANNULLATOIL <= #1970-01-01#)
+    SELECT 
+      O.IDORDINE, 
+      O.[ID IMPIANTO], 
+      O.DATAORDINE, 
+      O.NOMEORDINE, 
+      O.[IMPORTOORDINE€] as IMPORTOORDINE, 
+      O.[NOTE], 
+      O.ESEGUITO, 
+      O.ANNULLATOIL,
+      O.IDPREVENTIVORIFERIMENTO,
+      ASS.[NOTE] as NOTERICHIESTA
+    FROM ((([B-05-T-ORDINI] as O
+    LEFT JOIN [A-02-T-PREVENTIVI] as P ON O.IDPREVENTIVORIFERIMENTO = P.IDPREVENTIVO)
+    LEFT JOIN [A-01-T-TRATTATIVE] as T ON P.IDTRATTATIVA = T.IDTRATTATIVA)
+    LEFT JOIN [T-01-T-ASSEGNAZIONI] as ASS ON T.IDASSEGNAZIONE = ASS.IDASSEGNAZIONE)
+    WHERE O.[ID IMPIANTO] = ${id} 
+      AND (O.ESEGUITO IS NULL OR O.ESEGUITO <= #1970-01-01#) 
+      AND (O.ANNULLATOIL IS NULL OR O.ANNULLATOIL <= #1970-01-01#)
+    ORDER BY O.IDORDINE DESC
   `;
-  // NOTA: Se [ID IMPIANTO] è Testo in Access, usa: WHERE [ID IMPIANTO] = '${id}'
 
   connection
     .query(query)
@@ -131,5 +143,40 @@ router.get("/ordiniaperti/:id", (req, res) => {
       res.status(500).json({ error: "Errore nell'esecuzione della query" });
     });
 });
+
+router.get("/preventiviaperti/:id", (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const id = req.params.id;
   
+  const query = `
+    SELECT 
+      T.IDTRATTATIVA, 
+      T.DATAINIZIOTRATTATIVA, 
+      T.NOMETRATTATIVA, 
+      ASS.[NOTE] as NOTETRATTATIVA,
+      P.IDPREVENTIVO, 
+      P.DATA as DATAPREVENTIVO, 
+      P.[IMPORTO€] as IMPORTO,
+      O.IDORDINE
+    FROM ((([A-01-T-TRATTATIVE] as T
+    LEFT JOIN [A-02-T-PREVENTIVI] as P ON T.IDTRATTATIVA = P.IDTRATTATIVA)
+    LEFT JOIN [B-05-T-ORDINI] as O ON P.IDPREVENTIVO = O.IDPREVENTIVORIFERIMENTO)
+    LEFT JOIN [T-01-T-ASSEGNAZIONI] as ASS ON T.IDASSEGNAZIONE = ASS.IDASSEGNAZIONE)
+    WHERE T.IDIMPIANTO = ${id}
+      AND (T.TRATTATIVACHIUSA = 0 OR T.TRATTATIVACHIUSA IS NULL)
+      AND (O.IDORDINE IS NULL OR O.IDORDINE = 0)
+    ORDER BY T.DATAINIZIOTRATTATIVA DESC, P.IDPREVENTIVO DESC
+  `;
+
+  connection
+    .query(query)
+    .then((data) => {
+      res.json(data);
+    })
+    .catch((err) => {
+      console.error(err);
+      res.status(500).json({ error: "Errore nell'esecuzione della query" });
+    });
+});
+
 module.exports = router;
