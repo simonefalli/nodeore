@@ -252,4 +252,168 @@ router.get("/situazione/:idcaf", async (req, res) => {
   }
 });
 
+/**
+ * GET /contabilita/fattura/:idProgressivo
+ * Estrae i dettagli completi di una singola fattura per la stampa di cortesia in PDF
+ * Query opzionale: ?azienda=ies|ciesse&numero=...&anno=...
+ */
+router.get("/fattura/:idProgressivo", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const idProgressivo = parseInt(req.params.idProgressivo, 10);
+  const azienda = (req.query.azienda || "ies").toLowerCase();
+
+  try {
+    let rows = [];
+    if (!isNaN(idProgressivo) && idProgressivo > 0) {
+      // 1. Cerca per IDPROGRESSIVO nella tabella principale
+      rows = await connection.query(`SELECT * FROM [F-01-T-TUTTEFATTURE] WHERE IDPROGRESSIVO = ${idProgressivo}`);
+
+      // Fallback tabella pre-2010 se non trovata
+      if (rows.length === 0) {
+        try {
+          rows = await connection.query(`SELECT * FROM [F-01-T-TUTTEFATTUREPRIMA2010] WHERE IDPROGRESSIVO = ${idProgressivo}`);
+        } catch (ePre) {}
+      }
+    }
+
+    // 2. Se non trovata o idProgressivo non valido, prova ricerca per numero e anno se forniti
+    if (rows.length === 0 && req.query.numero) {
+      const numFt = parseInt(req.query.numero, 10);
+      const annoFt = parseInt(req.query.anno, 10) || new Date().getFullYear();
+      if (!isNaN(numFt) && numFt > 0) {
+        rows = await connection.query(`SELECT * FROM [F-01-T-TUTTEFATTURE] WHERE NUMEROFATTURA = ${numFt} AND ANNOFATTURA = ${annoFt}`);
+        if (rows.length === 0) {
+          try {
+            rows = await connection.query(`SELECT * FROM [F-01-T-TUTTEFATTUREPRIMA2010] WHERE NUMEROFATTURA = ${numFt} AND ANNOFATTURA = ${annoFt}`);
+          } catch (ePre) {}
+        }
+      }
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Fattura non trovata" });
+    }
+
+    const fattura = rows[0];
+    const actualIdProgressivo = fattura.IDPROGRESSIVO;
+
+    // 3. Dati anagrafici cliente
+    let cliente = null;
+    if (fattura.NUMEROCAF) {
+      try {
+        const cliRows = await connection.query(`SELECT * FROM [P-04-T-CLIENTI] WHERE [ID CAF] = ${fattura.NUMEROCAF}`);
+        if (cliRows.length > 0) cliente = cliRows[0];
+      } catch (eCli) {}
+    }
+
+    // 4. Dati impianto
+    let impianto = null;
+    if (fattura.NUMEROIMPIANTO) {
+      try {
+        const impRows = await connection.query(`SELECT * FROM [P-07-T-IMPIANTI] WHERE [NUMERO IMPIANTO] = ${fattura.NUMEROIMPIANTO}`);
+        if (impRows.length > 0) impianto = impRows[0];
+      } catch (eImp) {}
+    }
+
+    // 5. Riferimento normativo
+    let rifNormativo = null;
+    if (fattura.IDRIFNORMATIVO) {
+      try {
+        const rifRows = await connection.query(`SELECT * FROM [F-21-T-RIFERIMENTONORMATIVO] WHERE IDRIFERIMENTONORMATIVO = ${fattura.IDRIFNORMATIVO}`);
+        if (rifRows.length > 0) rifNormativo = rifRows[0];
+      } catch (eRif) {}
+    }
+
+    // 6. Risoluzione CAP / Località / Provincia
+    const capIds = [fattura.CAPPOSTALE, fattura.CAPLEGALE, fattura.CAPIMPIANTO]
+      .map(v => parseInt(v, 10))
+      .filter(v => !isNaN(v) && v > 0);
+
+    const mapCap = {};
+    if (capIds.length > 0) {
+      try {
+        const uniqueIds = Array.from(new Set(capIds)).join(",");
+        const capRows = await connection.query(`SELECT IDCAP, CAP, LOCALITA, PROVINCIA FROM [X-05-T-CAP] WHERE IDCAP IN (${uniqueIds})`);
+        capRows.forEach(c => {
+          mapCap[c.IDCAP] = {
+            cap: c.CAP || "",
+            localita: c.LOCALITA || "",
+            provincia: c.PROVINCIA || ""
+          };
+        });
+      } catch (eCap) {}
+    }
+
+    // 7. Rate / Incassi collegati
+    let incassi = [];
+    if (actualIdProgressivo) {
+      try {
+        const sqlIncassi = `
+          SELECT [ID PAGAMENTO] AS IDPAGAMENTO, IDPROGRESSIVOFATTURA, NUMEROFATTURA,
+                 DATAPAGAMENTO, [TOTALE€] AS TOTALE, [5MODOPAGAMENTO] AS MODOPAGAMENTO,
+                 BANCA, CODABI, CAB, NUMERORID, CONTOCORRENTE, INSOLUTO, INCASSATA
+          FROM [G-01-T-INCASSI]
+          WHERE IDPROGRESSIVOFATTURA = ${actualIdProgressivo}
+          ORDER BY DATAPAGAMENTO ASC, [ID PAGAMENTO] ASC
+        `;
+        incassi = await connection.query(sqlIncassi);
+      } catch (eInc) {}
+    }
+
+    // 8. Informazioni Azienda emittente
+    const aziendaInfo = azienda === "ciesse" ? {
+      codice: "ciesse",
+      nome: "Ciesse srl",
+      indirizzo: "Via Galvani 36",
+      cap: "20019",
+      citta: "Settimo Milanese",
+      provincia: "MI",
+      telefono: "0233512408",
+      fax: "",
+      email: "info@ciessesicurezza.it",
+      sito: "www.ciessesicurezza.it",
+      pec: "ciessesrl@pec.it",
+      partitaIva: "08180660154",
+      codiceFiscale: "08180660154",
+      cciaa: "",
+      tribunale: "",
+      iban: "IT 63 X 01030 38083 000000688202",
+      logo: "logo_ciesse.png"
+    } : {
+      codice: "ies",
+      nome: "Ingegneria e Sistemi srl",
+      indirizzo: "Via Caduti Di Nassiriya N.67-69",
+      cap: "50018",
+      citta: "SCANDICCI",
+      provincia: "FI",
+      telefono: "055-7356766",
+      fax: "055-7357276",
+      email: "info@iesingegneria.it",
+      sito: "www.iesingegneria.it",
+      pec: "ingegneriaesistemi@pec.it",
+      partitaIva: "05788780483",
+      codiceFiscale: "05788780483",
+      cciaa: "575362",
+      tribunale: "Firenze",
+      iban: "IT 63 X 01030 38083 000000688202",
+      logo: "logo.png"
+    };
+
+    res.json({
+      fattura,
+      cliente,
+      impianto,
+      rifNormativo,
+      mapCap,
+      incassi,
+      aziendaInfo
+    });
+
+  } catch (err) {
+    console.error("[CONTABILITA] Errore estrazione fattura:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione dati fattura" });
+  }
+});
+
 module.exports = router;
+
