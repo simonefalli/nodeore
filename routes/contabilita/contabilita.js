@@ -360,7 +360,22 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
       } catch (eInc) {}
     }
 
-    // 8. Informazioni Azienda emittente
+    // 8. Dettagli righe interventi / articoli
+    let dettagli = [];
+    if (actualIdProgressivo) {
+      try {
+        const sqlDettagli = `
+          SELECT IDGENERALEDETTAGLIFATTURE, IDPROGRESSIVOFATTURA, IDORDINAMENTOCORPOFATTURA,
+                 DESCRIZIONE, QUANTITADETTAGLIO, PREZZODETTAGLIO, IDSERIALE, IDBOLLA, DATABOLLA, DESCRIZIONEARTICOLO
+          FROM [F-01-T-DETTAGLITUTTEFATTURE]
+          WHERE IDPROGRESSIVOFATTURA = ${actualIdProgressivo}
+          ORDER BY IDORDINAMENTOCORPOFATTURA DESC
+        `;
+        dettagli = await connection.query(sqlDettagli);
+      } catch (eDet) {}
+    }
+
+    // 9. Informazioni Azienda emittente
     const aziendaInfo = azienda === "ciesse" ? {
       codice: "ciesse",
       nome: "Ciesse srl",
@@ -395,7 +410,7 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
       codiceFiscale: "05788780483",
       cciaa: "575362",
       tribunale: "Firenze",
-      iban: "IT 63 X 01030 38083 000000688202",
+      iban: "IT63X0103038083000000688202",
       logo: "logo.png"
     };
 
@@ -406,6 +421,7 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
       rifNormativo,
       mapCap,
       incassi,
+      dettagli,
       aziendaInfo
     });
 
