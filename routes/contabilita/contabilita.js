@@ -157,16 +157,29 @@ router.get("/situazione/:idcaf", async (req, res) => {
     `;
     const incassiAperti = await connection.query(sqlIncassi);
 
-    // 5. Crediti a perdita e sopravvenienze
+    // 5. Crediti a perdita e sopravvenienze attive
     let creditiPerdita = [];
     try {
       creditiPerdita = await connection.query(`
-        SELECT IDCREDITOSOFFERENZA, ANNOPORTATOAPERDITA, IMPORTOCREDITOSOFFERENZA, NUMEROIMPIANTODEBITORE
+        SELECT IDCREDITOSOFFERENZA, ANNOPORTATOAPERDITA, IMPORTOCREDITOSOFFERENZA, NUMEROIMPIANTODEBITORE, IDPAGAMENTOCREDITO
         FROM [G-21-T-CREDITISOFFERENZAPORTATIAPERDITA]
         WHERE IDCAFDEBITORE = ${idCaf}
+        ORDER BY ANNOPORTATOAPERDITA DESC, IDCREDITOSOFFERENZA DESC
       `);
     } catch (eCP) {
       creditiPerdita = [];
+    }
+
+    let sopravvenienze = [];
+    try {
+      sopravvenienze = await connection.query(`
+        SELECT IDSOPRAVVENIENZAATTIVA, ANNOPORTATOASOPRAVVENIENZA, IMPORTOCREDITOSOPRAVVENIENZA, NUMEROIMPIANTODEBITOREATTIVO, IDPAGAMENTOCREDITOSOPRAVVENIENZA
+        FROM [G-22-T-SOPRAVVENIENZEATTIVE]
+        WHERE IDCAFDEBITOREATTIVO = ${idCaf}
+        ORDER BY ANNOPORTATOASOPRAVVENIENZA DESC, IDSOPRAVVENIENZAATTIVA DESC
+      `);
+    } catch (eSop) {
+      sopravvenienze = [];
     }
 
     // Calcoli totali e partizionamento Scaduti vs Futuri
@@ -215,6 +228,10 @@ router.get("/situazione/:idcaf", async (req, res) => {
 
     const differenzaFattureBanca = totFattureNetto - nettoBanca;
     const totCreditiPerdita = creditiPerdita.reduce((acc, c) => acc + (Number(c.IMPORTOCREDITOSOFFERENZA) || 0), 0);
+    const totSopravvenienze = sopravvenienze.reduce((acc, s) => acc + (Number(s.IMPORTOCREDITOSOPRAVVENIENZA) || 0), 0);
+
+    // DARE EFFETTIVO (Soldi da Avere): Differenza Fatture-Banca stornando i Crediti a Perdita e sommando le Sopravvenienze
+    const dareEffettivo = differenzaFattureBanca - totCreditiPerdita + totSopravvenienze;
 
     res.json({
       cliente,
@@ -230,12 +247,16 @@ router.get("/situazione/:idcaf", async (req, res) => {
         totaleBanca: nettoBanca,
         conteggioBanca: banca.length,
         differenzaFattureBanca,
+        totaleCreditiPerdita: totCreditiPerdita,
+        conteggioCreditiPerdita: creditiPerdita.length,
+        totaleSopravvenienze: totSopravvenienze,
+        conteggioSopravvenienze: sopravvenienze.length,
+        dareEffettivo,
         totaleScaduti: totScaduti,
         conteggioScaduti: scaduti.length,
         totaleFuturi: totFuturi,
         conteggioFuturi: futuri.length,
-        avereEffettivo: totScaduti,
-        totaleCreditiPerdita: totCreditiPerdita,
+        avereEffettivo: dareEffettivo,
         saldoIniziale: Number(cliente.SALDOINIZIALE) || 0,
         arrotondamento: Number(cliente.ARROTONDAMENTO) || 0,
         arrotondamentoSpeseLegali: Number(cliente.ARROTONDAMENTOSPESELEGALI) || 0
@@ -244,7 +265,8 @@ router.get("/situazione/:idcaf", async (req, res) => {
       banca,
       scaduti,
       futuri,
-      creditiPerdita
+      creditiPerdita,
+      sopravvenienze
     });
   } catch (err) {
     console.error("[CONTABILITA] Errore estrazione situazione:", err.message || err);
@@ -369,7 +391,7 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
                  DESCRIZIONE, QUANTITADETTAGLIO, PREZZODETTAGLIO, IDSERIALE, IDBOLLA, DATABOLLA, DESCRIZIONEARTICOLO
           FROM [F-01-T-DETTAGLITUTTEFATTURE]
           WHERE IDPROGRESSIVOFATTURA = ${actualIdProgressivo}
-          ORDER BY IDORDINAMENTOCORPOFATTURA DESC
+          ORDER BY IDORDINAMENTOCORPOFATTURA ASC, IDGENERALEDETTAGLIFATTURE ASC
         `;
         dettagli = await connection.query(sqlDettagli);
       } catch (eDet) {}
