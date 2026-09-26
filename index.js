@@ -83,6 +83,16 @@ app.post('/upload', upload.single('photo'), (req, res ,next) => {
 app.use(bodyParser.urlencoded({ extended: true }));
 //app.set('case sensitive routing', true);
 
+// Gestore globale errori Express (intercetta URIError su parametri non UTF-8 o malformati)
+app.use((err, req, res, next) => {
+  if (err instanceof URIError) {
+    console.warn(`[URIError intercettato] URL o parametro non valido: ${req.originalUrl || req.url}`);
+    return res.status(400).json({ error: 'Parametro URI non valido', message: err.message });
+  }
+  console.error('[Errore Server Non Gestito]:', err);
+  res.status(500).json({ error: 'Errore interno del server' });
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, (req, res) => {
   console.log("Avvio del server sulla porta " + PORT);

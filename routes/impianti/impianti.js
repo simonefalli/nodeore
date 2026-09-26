@@ -48,7 +48,7 @@ router.post("/", (req, res) => {
   const connection = dbaccess.getConnection(req);
   const params = req.body.data;
 
-  const parolaRicerca = params.ricerca;
+  const parolaRicerca = typeof params?.ricerca === 'string' ? params.ricerca.replace(/'/g, "''") : (params.ricerca || '');
   const arrayRicerca = parolaRicerca.split(" ");
 
   let query = `

@@ -8,11 +8,12 @@ const dbaccess = require('../../dbaccess');
 
 router.get('/:impianto', (req, res) => {
     const connection = dbaccess.getConnection(req);
-    impianto = req.params.impianto;
-    //impianto = impianto.replace(/_/g, "\\_").replace(/%/g, "\\%");
-    impianto = impianto.toLowerCase();
+    const idImpianto = parseInt(req.params.impianto, 10);
+    if (!idImpianto || isNaN(idImpianto) || idImpianto <= 0) {
+        return res.json({});
+    }
     
-    const query = `SELECT * FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] WHERE  [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROIMPIANTO] = ${impianto};`;
+    const query = `SELECT * FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] WHERE [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROIMPIANTO] = ${idImpianto};`;
    
    // [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROCOMUNICAZIONE], [Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE]
     //const query = `SELECT [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROIMPIANTO] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROCOMUNICAZIONE],  [Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[MOTIVOCHIAMATA]  FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] WHERE LCASE ([Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE]) LIKE '%${impianto}%';`;

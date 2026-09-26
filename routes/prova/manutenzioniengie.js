@@ -8,16 +8,19 @@ const dbaccess = require('../../dbaccess');
 
 // GET IMPIANTO SINGOLO
 
-router.get('/:impianto', (req, res) => {
+router.get(['/', '/:impianto'], (req, res) => {
     const connection = dbaccess.getConnection(req);
-    let impianto = req.params.impianto ? req.params.impianto.trim().toLowerCase() : '';
+    let raw = req.query.nome || req.params.impianto || '';
+    let impianto = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
     
     // Se il nome è vuoto o troppo corto, restituisce subito errore senza interrogare Access
     if (!impianto || impianto.length < 2) {
         return res.json({ message: "errore" });
     }
 
-    const query = `SELECT [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROIMPIANTO] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROCOMUNICAZIONE], [Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[MOTIVOCHIAMATA] FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] WHERE LCASE ([Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE]) LIKE '%${impianto}%';`;
+    const cleanImpianto = impianto.replace(/'/g, "''");
+
+    const query = `SELECT [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROIMPIANTO] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[NUMEROCOMUNICAZIONE], [Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE] , [Q-01-T-COMUNICAZIONIDAGESTIRE].[MOTIVOCHIAMATA] FROM [Q-01-T-COMUNICAZIONIDAGESTIRE] WHERE LCASE ([Q-01-T-COMUNICAZIONIDAGESTIRE].[NOMECLIENTE]) LIKE '%${cleanImpianto}%';`;
   
     connection.query(query)
       .then(data => {
