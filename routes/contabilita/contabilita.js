@@ -50,6 +50,49 @@ router.get("/clienti", async (req, res) => {
 });
 
 /**
+ * GET /contabilita/impianti
+ * Ricerca impianti per nome impianto, numero impianto o ragione sociale cliente
+ * Query: ?q=testo&azienda=ies|ciesse
+ */
+router.get("/impianti", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const q = (req.query.q || "").trim();
+
+  if (!q) {
+    return res.json([]);
+  }
+
+  const cleanQ = q.replace(/'/g, "''");
+  const isNum = /^\d+$/.test(cleanQ);
+
+  const sql = `
+    SELECT TOP 30
+      I.[NUMERO IMPIANTO] AS IDIMPIANTO,
+      I.[NOME] AS NOMEIMPIANTO,
+      I.[NUMERO CAF] AS IDCAF,
+      C.[RAGIONE SOCIALE] AS RAGIONESOCIALE,
+      I.[LUOGO IMPIANTO] AS INDIRIZZO,
+      I.[NUMEROTELEFONO] AS TELEFONO
+    FROM [P-07-T-IMPIANTI] AS I
+    LEFT JOIN [P-04-T-CLIENTI] AS C ON I.[NUMERO CAF] = C.[ID CAF]
+    WHERE I.[NUMERO IMPIANTO] > 0 AND (
+      I.[NOME] LIKE '%${cleanQ}%'
+      OR C.[RAGIONE SOCIALE] LIKE '%${cleanQ}%'
+      ${isNum ? `OR I.[NUMERO IMPIANTO] = ${cleanQ}` : ''}
+    )
+    ORDER BY I.[NOME] ASC
+  `;
+
+  try {
+    const plants = await connection.query(sql);
+    res.json(plants);
+  } catch (err) {
+    console.error("[CONTABILITA] Errore ricerca impianti:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore esecuzione ricerca impianti" });
+  }
+});
+
+/**
  * GET /contabilita/situazione/:idcaf
  * Estrae la situazione contabile completa per il cliente
  * Query opzionale: ?data=YYYY-MM-DD (Data situazione di riferimento)
@@ -271,6 +314,231 @@ router.get("/situazione/:idcaf", async (req, res) => {
   } catch (err) {
     console.error("[CONTABILITA] Errore estrazione situazione:", err.message || err);
     res.status(500).json({ error: err.message || "Errore estrazione dati contabili" });
+  }
+});
+
+/**
+ * GET /contabilita/situazione-impianto/:idImpianto
+ * Estrae la situazione contabile completa per un singolo impianto (maschera g-31)
+ * Query opzionale: ?data=YYYY-MM-DD (Data situazione di riferimento)
+ */
+router.get("/situazione-impianto/:idImpianto", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const idImpianto = parseInt(req.params.idImpianto, 10);
+
+  if (isNaN(idImpianto) || idImpianto <= 0) {
+    return res.status(400).json({ error: "ID Impianto non valido o assente" });
+  }
+
+  const dataRif = req.query.data ? req.query.data.substring(0, 10) : new Date().toISOString().substring(0, 10);
+
+  try {
+    // 1. Dati Impianto e Cliente proprietario
+    const sqlImp = `
+      SELECT 
+        I.[NUMERO IMPIANTO] AS IDIMPIANTO,
+        I.[NOME] AS NOMEIMPIANTO,
+        I.[NUMERO CAF] AS IDCAF,
+        I.[LUOGO IMPIANTO] AS INDIRIZZO,
+        I.[CIVICO],
+        I.[LOCALITA' IMPIANTO] AS LOCALITA,
+        I.[CAP IMPIANTO] AS CAP,
+        I.[NUMEROTELEFONO] AS TELEFONO,
+        C.[RAGIONE SOCIALE] AS RAGIONESOCIALE,
+        C.[PARTITA IVA] AS PARTITAIVA,
+        C.[CODICE FISCALE] AS CODICEFISCALE,
+        C.[LUOGO LEGALE] AS LUOGOLEGALE,
+        C.[SALDOINIZIALE€] AS SALDOINIZIALE,
+        C.[ARROTONDAMENTO€] AS ARROTONDAMENTO,
+        C.[ARROTONDAMENTOPERSPESELEGALI€] AS ARROTONDAMENTOSPESELEGALI
+      FROM [P-07-T-IMPIANTI] AS I
+      LEFT JOIN [P-04-T-CLIENTI] AS C ON I.[NUMERO CAF] = C.[ID CAF]
+      WHERE I.[NUMERO IMPIANTO] = ${idImpianto}
+    `;
+    const impRows = await connection.query(sqlImp);
+    if (impRows.length === 0) {
+      return res.status(404).json({ error: `Impianto #${idImpianto} non trovato` });
+    }
+    const impianto = impRows[0];
+
+    // 2. FATTURE DELL'IMPIANTO (con fallback se esiste tabella pre-2010)
+    let sqlFatture = `
+      SELECT IDPROGRESSIVO, DATAFATTURA, NUMEROFATTURA, TIPODOCUMENTO, [TOTALEAPAGARE€] AS TOTALE, PAGATA, NUMEROIMPIANTO
+      FROM [F-01-T-TUTTEFATTURE]
+      WHERE NUMEROIMPIANTO = ${idImpianto}
+      UNION ALL
+      SELECT IDPROGRESSIVO, DATAFATTURA, NUMEROFATTURA, TIPODOCUMENTO, [TOTALEAPAGARE€] AS TOTALE, PAGATA, NUMEROIMPIANTO
+      FROM [F-01-T-TUTTEFATTUREPRIMA2010]
+      WHERE NUMEROIMPIANTO = ${idImpianto}
+      ORDER BY DATAFATTURA ASC, NUMEROFATTURA ASC
+    `;
+
+    let fatture = [];
+    try {
+      fatture = await connection.query(sqlFatture);
+    } catch (eUnion) {
+      const sqlFattureSingle = `
+        SELECT IDPROGRESSIVO, DATAFATTURA, NUMEROFATTURA, TIPODOCUMENTO, [TOTALEAPAGARE€] AS TOTALE, PAGATA, NUMEROIMPIANTO
+        FROM [F-01-T-TUTTEFATTURE]
+        WHERE NUMEROIMPIANTO = ${idImpianto}
+        ORDER BY DATAFATTURA ASC, NUMEROFATTURA ASC
+      `;
+      fatture = await connection.query(sqlFattureSingle);
+    }
+
+    // 3. MOVIMENTI BANCA DELL'IMPIANTO (collegati tramite G-01-T-INCASSI.NUMEROIMPIANTO)
+    const sqlBanca = `
+      SELECT 
+        D.IDFATTURA,
+        D.IDPAGAMENTO,
+        D.[ENTRATE€] AS ENTRATE,
+        D.[USCITE€] AS USCITE,
+        M.DATAVALUTA,
+        M.DESCRIZIONEMOVIMENTO,
+        M.IDMOVIMENTO,
+        M.IDMOVIMENTOGENERALE,
+        I.NUMEROFATTURA,
+        I.[5MODOPAGAMENTO] AS MODOPAGAMENTO,
+        C.DESCRIZIONECONTO
+      FROM ((([I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS D
+      INNER JOIN [I-09-T-TUTTIMOVIMENTIBANCA] AS M ON D.IDMOVIMENTOGENERALE = M.IDMOVIMENTOGENERALE)
+      LEFT JOIN [G-01-T-INCASSI] AS I ON D.IDPAGAMENTO = I.[ID PAGAMENTO])
+      LEFT JOIN [I-20-T-IDCONTO] AS C ON M.IDCONTO = C.IDCONTO)
+      WHERE I.NUMEROIMPIANTO = ${idImpianto}
+      ORDER BY M.DATAVALUTA ASC, M.IDMOVIMENTO ASC
+    `;
+    const banca = await connection.query(sqlBanca);
+
+    // 4. INCASSI APERTI DELL'IMPIANTO (Scaduti + Futuri)
+    const sqlIncassi = `
+      SELECT 
+        IDPROGRESSIVOFATTURA,
+        [ID PAGAMENTO] AS IDPAGAMENTO,
+        DATAPAGAMENTO,
+        NUMEROFATTURA,
+        [TOTALE€] AS TOTALE,
+        [5MODOPAGAMENTO] AS MODOPAGAMENTO,
+        INSOLUTO,
+        INCASSATA,
+        IDPAGAMENTOGENERALE,
+        NUMEROIMPIANTO
+      FROM [G-01-T-INCASSI]
+      WHERE NUMEROIMPIANTO = ${idImpianto} AND (INCASSATA = '0' OR INCASSATA IS NULL OR INCASSATA = '')
+      ORDER BY DATAPAGAMENTO ASC
+    `;
+    const incassiAperti = await connection.query(sqlIncassi);
+
+    // 5. Crediti a perdita e sopravvenienze attive dell'impianto
+    let creditiPerdita = [];
+    try {
+      creditiPerdita = await connection.query(`
+        SELECT IDCREDITOSOFFERENZA, ANNOPORTATOAPERDITA, IMPORTOCREDITOSOFFERENZA, NUMEROIMPIANTODEBITORE, IDPAGAMENTOCREDITO
+        FROM [G-21-T-CREDITISOFFERENZAPORTATIAPERDITA]
+        WHERE NUMEROIMPIANTODEBITORE = ${idImpianto}
+        ORDER BY ANNOPORTATOAPERDITA DESC, IDCREDITOSOFFERENZA DESC
+      `);
+    } catch (eCP) {
+      creditiPerdita = [];
+    }
+
+    let sopravvenienze = [];
+    try {
+      sopravvenienze = await connection.query(`
+        SELECT IDSOPRAVVENIENZAATTIVA, ANNOPORTATOASOPRAVVENIENZA, IMPORTOCREDITOSOPRAVVENIENZA, NUMEROIMPIANTODEBITOREATTIVO, IDPAGAMENTOCREDITOSOPRAVVENIENZA
+        FROM [G-22-T-SOPRAVVENIENZEATTIVE]
+        WHERE NUMEROIMPIANTODEBITOREATTIVO = ${idImpianto}
+        ORDER BY ANNOPORTATOASOPRAVVENIENZA DESC, IDSOPRAVVENIENZAATTIVA DESC
+      `);
+    } catch (eSop) {
+      sopravvenienze = [];
+    }
+
+    // Calcoli totali e partizionamento Scaduti vs Futuri
+    let totFattureLordo = 0;
+    let totNoteCredito = 0;
+    let conteggioFatturePositive = 0;
+    let conteggioNoteCredito = 0;
+
+    fatture.forEach((f) => {
+      const tipo = parseInt(f.TIPODOCUMENTO, 10);
+      const imp = Number(f.TOTALE) || 0;
+      if (tipo === 2) {
+        totNoteCredito += imp;
+        conteggioNoteCredito++;
+        f.isNotaCredito = true;
+        f.tipoDocumentoLabel = "NC";
+      } else {
+        totFattureLordo += imp;
+        conteggioFatturePositive++;
+        f.isNotaCredito = false;
+        f.tipoDocumentoLabel = "FT";
+      }
+    });
+    const totFattureNetto = totFattureLordo - totNoteCredito;
+
+    const totEntrateBanca = banca.reduce((acc, b) => acc + (Number(b.ENTRATE) || 0), 0);
+    const totUsciteBanca = banca.reduce((acc, b) => acc + (Number(b.USCITE) || 0), 0);
+    const nettoBanca = totEntrateBanca - totUsciteBanca;
+
+    const scaduti = [];
+    const futuri = [];
+    let totScaduti = 0;
+    let totFuturi = 0;
+
+    incassiAperti.forEach((inc) => {
+      const dStr = inc.DATAPAGAMENTO ? inc.DATAPAGAMENTO.substring(0, 10) : "";
+      const imp = Number(inc.TOTALE) || 0;
+      if (dStr && dStr <= dataRif) {
+        scaduti.push(inc);
+        totScaduti += imp;
+      } else {
+        futuri.push(inc);
+        totFuturi += imp;
+      }
+    });
+
+    const totCreditiPerdita = creditiPerdita.reduce((acc, c) => acc + (Number(c.IMPORTOCREDITOSOFFERENZA) || 0), 0);
+    const totSopravvenienze = sopravvenienze.reduce((acc, s) => acc + (Number(s.IMPORTOCREDITOSOPRAVVENIENZA) || 0), 0);
+
+    const diffFattureBanca = totFattureNetto - nettoBanca;
+    // Nel form Access g-31: DARE = (Fatture - Banca) - CreditiPerdita + Sopravvenienze - IncassiFuturi (o rate aperte)
+    const dareEffettivo = diffFattureBanca - totCreditiPerdita + totSopravvenienze - totFuturi;
+
+    res.json({
+      impianto,
+      dataRiferimento: dataRif,
+      riepilogo: {
+        totaleFatture: totFattureNetto,
+        totaleFattureLordo: totFattureLordo,
+        totaleNoteCredito: totNoteCredito,
+        totaleFattureNetto: totFattureNetto,
+        conteggioFatture: fatture.length,
+        conteggioFatturePositive,
+        conteggioNoteCredito,
+        totaleBanca: nettoBanca,
+        conteggioBanca: banca.length,
+        differenzaFattureBanca: diffFattureBanca,
+        totaleCreditiPerdita: totCreditiPerdita,
+        conteggioCreditiPerdita: creditiPerdita.length,
+        totaleSopravvenienze: totSopravvenienze,
+        conteggioSopravvenienze: sopravvenienze.length,
+        dareEffettivo,
+        totaleScaduti: totScaduti,
+        conteggioScaduti: scaduti.length,
+        totaleFuturi: totFuturi,
+        conteggioFuturi: futuri.length,
+        avereEffettivo: dareEffettivo
+      },
+      fatture,
+      banca,
+      scaduti,
+      futuri,
+      creditiPerdita,
+      sopravvenienze
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore estrazione situazione impianto:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione dati contabili impianto" });
   }
 });
 
