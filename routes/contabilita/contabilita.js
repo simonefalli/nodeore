@@ -721,5 +721,451 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
   }
 });
 
+
+/**
+ * GET /contabilita/banca/conti
+ * Restituisce i conti correnti / casse con l'ultimo saldo registrato
+ */
+router.get("/banca/conti", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const conti = await connection.query(`
+      SELECT IDCONTO, DESCRIZIONECONTO, CAUSALECONTOCONTABILITA
+      FROM [I-20-T-IDCONTO]
+      ORDER BY IDCONTO ASC
+    `);
+
+    // Per ogni conto, recupera l'ultimo saldo registrato
+    const contiConSaldo = await Promise.all(
+      conti.map(async (c) => {
+        try {
+          const s = await connection.query(`
+            SELECT TOP 1 SALDO, DATAVALUTA
+            FROM [I-09-T-TUTTIMOVIMENTIBANCA]
+            WHERE IDCONTO = ${c.IDCONTO} AND SALDO IS NOT NULL
+            ORDER BY DATAVALUTA DESC, IDMOVIMENTOGENERALE DESC
+          `);
+          return {
+            idConto: c.IDCONTO,
+            descrizioneConto: c.DESCRIZIONECONTO,
+            causaleContoContabilita: c.CAUSALECONTOCONTABILITA,
+            ultimoSaldo: s.length > 0 && s[0].SALDO !== null ? Number(s[0].SALDO) : 0,
+            dataUltimoSaldo: s.length > 0 ? s[0].DATAVALUTA : null
+          };
+        } catch (e) {
+          return {
+            idConto: c.IDCONTO,
+            descrizioneConto: c.DESCRIZIONECONTO,
+            causaleContoContabilita: c.CAUSALECONTOCONTABILITA,
+            ultimoSaldo: 0,
+            dataUltimoSaldo: null
+          };
+        }
+      })
+    );
+
+    res.json(contiConSaldo);
+  } catch (err) {
+    console.error("[CONTABILITA] Errore elenco conti:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione conti" });
+  }
+});
+
+/**
+ * GET /contabilita/banca/movimenti
+ * Estrae l'elenco dei movimenti bancari e di cassa con filtri e paginazione
+ */
+router.get("/banca/movimenti", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const idConto = req.query.idconto ? parseInt(req.query.idconto) : null;
+    const idFornitore = req.query.idfornitore ? parseInt(req.query.idfornitore) : null;
+    const idCliente = req.query.idcliente ? parseInt(req.query.idcliente) : null;
+    const dataDa = req.query.data_da ? req.query.data_da.trim() : null;
+    const dataA = req.query.data_a ? req.query.data_a.trim() : null;
+    const tipo = req.query.tipo ? req.query.tipo.trim().toLowerCase() : null; // 'entrate', 'uscite', 'tutti'
+    const q = req.query.q ? req.query.q.trim().replace(/'/g, "''") : null;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(250, Math.max(10, parseInt(req.query.limit) || 50));
+
+    const whereClauses = [];
+
+    if (idConto && idConto > 0) {
+      whereClauses.push(`m.IDCONTO = ${idConto}`);
+    }
+    if (idFornitore && idFornitore > 0) {
+      whereClauses.push(`d.IDFORNITORE = ${idFornitore}`);
+    }
+    if (idCliente && idCliente > 0) {
+      whereClauses.push(`d.IDCLIENTE = ${idCliente}`);
+    }
+    if (dataDa && /^\d{4}-\d{2}-\d{2}$/.test(dataDa)) {
+      whereClauses.push(`m.DATAVALUTA >= #${dataDa}#`);
+    }
+    if (dataA && /^\d{4}-\d{2}-\d{2}$/.test(dataA)) {
+      whereClauses.push(`m.DATAVALUTA <= #${dataA}#`);
+    }
+    if (tipo === 'entrate') {
+      whereClauses.push(`(d.[ENTRATE€] > 0)`);
+    } else if (tipo === 'uscite') {
+      whereClauses.push(`(d.[USCITE€] > 0)`);
+    }
+    if (q) {
+      const isNum = /^\d+$/.test(q);
+      const searchParts = [
+        `m.DESCRIZIONEMOVIMENTO LIKE '%${q}%'`,
+        `f.NOME LIKE '%${q}%'`,
+        `f.RAGIONE_SO LIKE '%${q}%'`,
+        `c.[RAGIONE SOCIALE] LIKE '%${q}%'`
+      ];
+      if (isNum) {
+        searchParts.push(`m.IDMOVIMENTOGENERALE = ${q}`);
+        searchParts.push(`m.IDMOVIMENTO = ${q}`);
+        searchParts.push(`d.IDFORNITORE = ${q}`);
+      }
+      whereClauses.push(`(${searchParts.join(' OR ')})`);
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    // Calcolo KPI aggregati (Totale Entrate, Totale Uscite, Conteggio)
+    const aggSql = `
+      SELECT 
+        SUM(d.[ENTRATE€]) AS TOT_ENTRATE,
+        SUM(d.[USCITE€]) AS TOT_USCITE,
+        COUNT(*) AS TOT_RIGHE
+      FROM (((([I-09-T-TUTTIMOVIMENTIBANCA] AS m
+      INNER JOIN [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d ON m.IDMOVIMENTOGENERALE = d.IDMOVIMENTOGENERALE)
+      LEFT JOIN [I-20-T-IDCONTO] AS co ON m.IDCONTO = co.IDCONTO)
+      LEFT JOIN [D-13-T-FORNITORI] AS f ON d.IDFORNITORE = f.[ID FORNITORE])
+      LEFT JOIN [P-04-T-CLIENTI] AS c ON d.IDCLIENTE = c.[ID CAF])
+      ${whereSql}
+    `;
+
+    const aggResult = await connection.query(aggSql);
+    const totEntrate = aggResult.length > 0 && aggResult[0].TOT_ENTRATE ? Number(aggResult[0].TOT_ENTRATE) : 0;
+    const totUscite = aggResult.length > 0 && aggResult[0].TOT_USCITE ? Number(aggResult[0].TOT_USCITE) : 0;
+    const totRighe = aggResult.length > 0 && aggResult[0].TOT_RIGHE ? parseInt(aggResult[0].TOT_RIGHE) : 0;
+
+    // Recupera i record per la pagina richiesta usando SELECT TOP ${page * limit}
+    const maxTop = page * limit;
+    const listSql = `
+      SELECT TOP ${maxTop}
+        m.IDMOVIMENTOGENERALE,
+        m.IDMOVIMENTO,
+        m.ANNOMOVIMENTO,
+        m.IDCONTO,
+        co.DESCRIZIONECONTO,
+        m.DATAVALUTA,
+        m.DESCRIZIONEMOVIMENTO,
+        m.SALDO,
+        d.IDPROGRESSIVOGENERALE,
+        d.IDFORNITORE,
+        f.NOME AS NOMEFORNITORE,
+        f.RAGIONE_SO AS RAGIONESOCIALEFORNITORE,
+        d.IDCLIENTE,
+        c.[RAGIONE SOCIALE] AS NOMECLIENTE,
+        d.[ENTRATE€] AS ENTRATE,
+        d.[USCITE€] AS USCITE,
+        d.IDPAGAMENTO,
+        d.IDFATTURAFORNITORE
+      FROM (((([I-09-T-TUTTIMOVIMENTIBANCA] AS m
+      INNER JOIN [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d ON m.IDMOVIMENTOGENERALE = d.IDMOVIMENTOGENERALE)
+      LEFT JOIN [I-20-T-IDCONTO] AS co ON m.IDCONTO = co.IDCONTO)
+      LEFT JOIN [D-13-T-FORNITORI] AS f ON d.IDFORNITORE = f.[ID FORNITORE])
+      LEFT JOIN [P-04-T-CLIENTI] AS c ON d.IDCLIENTE = c.[ID CAF])
+      ${whereSql}
+      ORDER BY m.DATAVALUTA DESC, m.IDMOVIMENTOGENERALE DESC, d.IDPROGRESSIVOGENERALE DESC
+    `;
+
+    const allRows = await connection.query(listSql);
+    const startIdx = (page - 1) * limit;
+    const pageRows = allRows.slice(startIdx, startIdx + limit);
+
+    // Saldo attuale del conto selezionato (se filtrato per conto)
+    let saldoAttualeConto = null;
+    if (idConto) {
+      try {
+        const s = await connection.query(`
+          SELECT TOP 1 SALDO
+          FROM [I-09-T-TUTTIMOVIMENTIBANCA]
+          WHERE IDCONTO = ${idConto} AND SALDO IS NOT NULL
+          ORDER BY DATAVALUTA DESC, IDMOVIMENTOGENERALE DESC
+        `);
+        if (s.length > 0 && s[0].SALDO !== null) {
+          saldoAttualeConto = Number(s[0].SALDO);
+        }
+      } catch (e) {}
+    }
+
+    res.json({
+      kpi: {
+        totaleEntrate: Math.round(totEntrate * 100) / 100,
+        totaleUscite: Math.round(totUscite * 100) / 100,
+        saldoPeriodo: Math.round((totEntrate - totUscite) * 100) / 100,
+        saldoAttualeConto: saldoAttualeConto !== null ? Math.round(saldoAttualeConto * 100) / 100 : null,
+        conteggio: totRighe
+      },
+      page,
+      limit,
+      totalPages: Math.ceil(totRighe / limit) || 1,
+      rows: pageRows.map(r => ({
+        idMovGen: r.IDMOVIMENTOGENERALE,
+        idMov: r.IDMOVIMENTO,
+        anno: r.ANNOMOVIMENTO,
+        idConto: r.IDCONTO,
+        nomeConto: r.DESCRIZIONECONTO || 'Altro',
+        dataValuta: r.DATAVALUTA,
+        descrizione: r.DESCRIZIONEMOVIMENTO || '',
+        saldo: r.SALDO !== null ? Number(r.SALDO) : null,
+        idDettaglio: r.IDPROGRESSIVOGENERALE,
+        idFornitore: r.IDFORNITORE && r.IDFORNITORE > 0 ? r.IDFORNITORE : null,
+        nomeFornitore: r.RAGIONESOCIALEFORNITORE || r.NOMEFORNITORE || null,
+        idCliente: r.IDCLIENTE && r.IDCLIENTE > 0 ? r.IDCLIENTE : null,
+        nomeCliente: r.NOMECLIENTE || null,
+        entrate: Number(r.ENTRATE) || 0,
+        uscite: Number(r.USCITE) || 0,
+        idPagamento: r.IDPAGAMENTO && r.IDPAGAMENTO > 0 ? r.IDPAGAMENTO : null,
+        idFatturaFornitore: r.IDFATTURAFORNITORE && r.IDFATTURAFORNITORE > 0 ? r.IDFATTURAFORNITORE : null
+      }))
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore movimenti banca:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione movimenti bancari" });
+  }
+});
+
+/**
+ * GET /contabilita/fornitori
+ * Ricerca e consultazione anagrafica fornitori
+ */
+router.get("/fornitori", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const q = req.query.q ? req.query.q.trim().replace(/'/g, "''") : '';
+    const soloAttivi = req.query.solo_attivi === '1';
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(10, parseInt(req.query.limit) || 30));
+
+    const whereClauses = [
+      `f.[ID FORNITORE] > 0`,
+      `(f.NOME IS NOT NULL OR f.RAGIONE_SO IS NOT NULL)`
+    ];
+
+    if (soloAttivi) {
+      whereClauses.push(`f.ATTIVO = '1'`);
+    }
+
+    if (q) {
+      const isNum = /^\d+$/.test(q);
+      const searchParts = [
+        `f.NOME LIKE '%${q}%'`,
+        `f.RAGIONE_SO LIKE '%${q}%'`,
+        `f.[PARTITA IVA] LIKE '%${q}%'`,
+        `f.[CODICE FISCALE] LIKE '%${q}%'`,
+        `f.LUOGO LIKE '%${q}%'`,
+        `f.TELEFONO LIKE '%${q}%'`,
+        `f.EMAIL LIKE '%${q}%'`
+      ];
+      if (isNum) {
+        searchParts.push(`f.[ID FORNITORE] = ${q}`);
+      }
+      whereClauses.push(`(${searchParts.join(' OR ')})`);
+    }
+
+    const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
+
+    // Conteggio totale
+    const countRes = await connection.query(`
+      SELECT COUNT(*) AS c FROM [D-13-T-FORNITORI] AS f ${whereSql}
+    `);
+    const totalRows = countRes.length > 0 ? parseInt(countRes[0].c) : 0;
+
+    const maxTop = page * limit;
+    const listSql = `
+      SELECT TOP ${maxTop}
+        f.[ID FORNITORE] AS IDFORNITORE,
+        f.NOME,
+        f.RAGIONE_SO,
+        f.[PARTITA IVA] AS PARTITAIVA,
+        f.[CODICE FISCALE] AS CODICEFISCALE,
+        f.VIA,
+        f.LUOGO,
+        f.PROVINCIA,
+        f.CAP,
+        f.TELEFONO,
+        f.FAX,
+        f.EMAIL,
+        f.PECFORNITORE,
+        f.IBAN,
+        f.BANCA,
+        f.PAGAMENTO,
+        f.[SISTEMA PAGAMENTO] AS SISTEMAPAGAMENTO,
+        f.ATTIVO
+      FROM [D-13-T-FORNITORI] AS f
+      ${whereSql}
+      ORDER BY f.NOME ASC, f.[ID FORNITORE] ASC
+    `;
+
+    const allRows = await connection.query(listSql);
+    const startIdx = (page - 1) * limit;
+    const pageRows = allRows.slice(startIdx, startIdx + limit);
+
+    res.json({
+      totalRows,
+      page,
+      limit,
+      totalPages: Math.ceil(totalRows / limit) || 1,
+      rows: pageRows.map(f => ({
+        idFornitore: f.IDFORNITORE,
+        nome: f.NOME || '',
+        ragioneSociale: f.RAGIONE_SO || f.NOME || '',
+        partitaIva: f.PARTITAIVA || '',
+        codiceFiscale: f.CODICEFISCALE || '',
+        via: f.VIA || '',
+        luogo: f.LUOGO || '',
+        provincia: f.PROVINCIA || '',
+        cap: f.CAP || '',
+        telefono: f.TELEFONO || '',
+        fax: f.FAX || '',
+        email: f.EMAIL || '',
+        pec: f.PECFORNITORE || '',
+        iban: f.IBAN || '',
+        banca: f.BANCA || '',
+        pagamento: f.PAGAMENTO || '',
+        sistemaPagamento: f.SISTEMAPAGAMENTO || '',
+        attivo: String(f.ATTIVO) === '1'
+      }))
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore ricerca fornitori:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione fornitori" });
+  }
+});
+
+/**
+ * GET /contabilita/fornitori/:idfornitore
+ * Dettaglio fornitore + statistiche pagamenti / movimenti
+ */
+router.get("/fornitori/:idfornitore", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const idFornitore = parseInt(req.params.idfornitore);
+    if (!idFornitore) {
+      return res.status(400).json({ error: "ID Fornitore non valido" });
+    }
+
+    const rows = await connection.query(`
+      SELECT TOP 1
+        f.[ID FORNITORE] AS IDFORNITORE,
+        f.NOME,
+        f.RAGIONE_SO,
+        f.[PARTITA IVA] AS PARTITAIVA,
+        f.[CODICE FISCALE] AS CODICEFISCALE,
+        f.VIA,
+        f.LUOGO,
+        f.PROVINCIA,
+        f.CAP,
+        f.TELEFONO,
+        f.FAX,
+        f.EMAIL,
+        f.PECFORNITORE,
+        f.IBAN,
+        f.BANCA,
+        f.PAGAMENTO,
+        f.[SISTEMA PAGAMENTO] AS SISTEMAPAGAMENTO,
+        f.ATTIVO
+      FROM [D-13-T-FORNITORI] AS f
+      WHERE f.[ID FORNITORE] = ${idFornitore}
+    `);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Fornitore non trovato" });
+    }
+
+    const f = rows[0];
+
+    // Recupera statistiche pagamenti e ultimi 10 movimenti bancari per questo fornitore
+    let stats = { totalePagato: 0, conteggioMovimenti: 0, ultimoPagamento: null };
+    let ultimiMovimenti = [];
+
+    try {
+      const statsRes = await connection.query(`
+        SELECT 
+          SUM(d.[USCITE€]) AS TOTALE_PAGATO,
+          COUNT(*) AS CONTEGGIO
+        FROM [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d
+        WHERE d.IDFORNITORE = ${idFornitore}
+      `);
+      if (statsRes.length > 0) {
+        stats.totalePagato = Math.round((Number(statsRes[0].TOTALE_PAGATO) || 0) * 100) / 100;
+        stats.conteggioMovimenti = parseInt(statsRes[0].CONTEGGIO) || 0;
+      }
+
+      const ultMovRes = await connection.query(`
+        SELECT TOP 10
+          m.IDMOVIMENTOGENERALE,
+          m.IDMOVIMENTO,
+          m.DATAVALUTA,
+          m.DESCRIZIONEMOVIMENTO,
+          co.DESCRIZIONECONTO,
+          d.[USCITE€] AS USCITE,
+          d.[ENTRATE€] AS ENTRATE,
+          d.IDPAGAMENTO,
+          d.IDFATTURAFORNITORE
+        FROM (([I-09-T-TUTTIMOVIMENTIBANCA] AS m
+        LEFT JOIN [I-20-T-IDCONTO] AS co ON m.IDCONTO = co.IDCONTO)
+        INNER JOIN [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d ON m.IDMOVIMENTOGENERALE = d.IDMOVIMENTOGENERALE)
+        WHERE d.IDFORNITORE = ${idFornitore}
+        ORDER BY m.DATAVALUTA DESC, m.IDMOVIMENTOGENERALE DESC
+      `);
+      ultimiMovimenti = ultMovRes.map(m => ({
+        idMovGen: m.IDMOVIMENTOGENERALE,
+        idMov: m.IDMOVIMENTO,
+        dataValuta: m.DATAVALUTA,
+        descrizione: m.DESCRIZIONEMOVIMENTO,
+        nomeConto: m.DESCRIZIONECONTO,
+        uscite: Number(m.USCITE) || 0,
+        entrate: Number(m.ENTRATE) || 0,
+        idPagamento: m.IDPAGAMENTO,
+        idFatturaFornitore: m.IDFATTURAFORNITORE
+      }));
+      if (ultMovRes.length > 0) {
+        stats.ultimoPagamento = ultMovRes[0].DATAVALUTA;
+      }
+    } catch (eStats) {
+      console.warn("[CONTABILITA] Statistiche fornitore non disponibili:", eStats.message);
+    }
+
+    res.json({
+      fornitore: {
+        idFornitore: f.IDFORNITORE,
+        nome: f.NOME || '',
+        ragioneSociale: f.RAGIONE_SO || f.NOME || '',
+        partitaIva: f.PARTITAIVA || '',
+        codiceFiscale: f.CODICEFISCALE || '',
+        via: f.VIA || '',
+        luogo: f.LUOGO || '',
+        provincia: f.PROVINCIA || '',
+        cap: f.CAP || '',
+        telefono: f.TELEFONO || '',
+        fax: f.FAX || '',
+        email: f.EMAIL || '',
+        pec: f.PECFORNITORE || '',
+        iban: f.IBAN || '',
+        banca: f.BANCA || '',
+        pagamento: f.PAGAMENTO || '',
+        sistemaPagamento: f.SISTEMAPAGAMENTO || '',
+        attivo: String(f.ATTIVO) === '1'
+      },
+      stats,
+      ultimiMovimenti
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore dettaglio fornitore:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione dettaglio fornitore" });
+  }
+});
+
 module.exports = router;
 

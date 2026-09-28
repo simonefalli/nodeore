@@ -33,13 +33,14 @@ const aggiornaDbRoute = require("./routes/aggiornaDbRoute");
 const ordiniRoute = require('./routes/ordini/ordini');
 const preventiviRoute = require('./routes/preventivi/preventivi');
 const contabilitaRoute = require('./routes/contabilita/contabilita');
+const databrowserRoute = require('./routes/databrowser/databrowser');
 app.use(
   cors({
     origin: "*",
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json()); //qui
 //app.use(morgan('combined')); // da usare per debug
@@ -65,6 +66,7 @@ app.use("/aggiorna", aggiornaDbRoute);
 app.use("/ordini" , ordiniRoute);
 app.use("/preventivi", preventiviRoute);
 app.use("/contabilita", contabilitaRoute);
+app.use("/databrowser", databrowserRoute);
 /*
 
 app.post('/upload', upload.single('photo'), (req, res ,next) => {
