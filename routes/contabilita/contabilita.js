@@ -6,6 +6,19 @@ const dbaccess = require("../../dbaccess");
 router.use(verifyToken);
 
 /**
+ * GET /contabilita/aziende
+ * Restituisce l'elenco completo di tutte le aziende del gruppo configurate in memoria
+ */
+router.get("/aziende", async (req, res) => {
+  try {
+    const aziende = dbaccess.getAllAziendeConfig();
+    res.json(aziende);
+  } catch (err) {
+    res.status(500).json({ error: err.message || "Errore recupero configurazione aziende" });
+  }
+});
+
+/**
  * GET /contabilita/clienti
  * Ricerca clienti per ragione sociale o ID CAF
  * Query: ?q=testo&azienda=ies|ciesse
@@ -665,43 +678,51 @@ router.get("/fattura/:idProgressivo", async (req, res) => {
       } catch (eDet) {}
     }
 
-    // 9. Informazioni Azienda emittente
-    const aziendaInfo = azienda === "ciesse" ? {
-      codice: "ciesse",
-      nome: "Ciesse srl",
-      indirizzo: "Via Galvani 36",
-      cap: "20019",
-      citta: "Settimo Milanese",
-      provincia: "MI",
-      telefono: "0233512408",
-      fax: "",
-      email: "info@ciessesicurezza.it",
-      sito: "www.ciessesicurezza.it",
-      pec: "ciessesrl@pec.it",
-      partitaIva: "08180660154",
-      codiceFiscale: "08180660154",
-      cciaa: "",
-      tribunale: "",
-      iban: "IT 63 X 01030 38083 000000688202",
-      logo: "logo_ciesse.png"
-    } : {
-      codice: "ies",
-      nome: "Ingegneria e Sistemi srl",
-      indirizzo: "Via Caduti Di Nassiriya N.67-69",
-      cap: "50018",
-      citta: "SCANDICCI",
-      provincia: "FI",
-      telefono: "055-7356766",
-      fax: "055-7357276",
-      email: "info@iesingegneria.it",
-      sito: "www.iesingegneria.it",
-      pec: "ingegneriaesistemi@pec.it",
-      partitaIva: "05788780483",
-      codiceFiscale: "05788780483",
-      cciaa: "575362",
-      tribunale: "Firenze",
-      iban: "IT63X0103038083000000688202",
-      logo: "logo.png"
+    // 9. Informazioni Azienda emittente (recuperate dalle costanti societarie in RAM)
+    const azConfig = await dbaccess.getAziendaConfig(azienda);
+    const viaCivico = (azConfig && azConfig.via ? (azConfig.via.trim() + (azConfig.civico ? " " + azConfig.civico.trim() : "")) : "").trim();
+    const cciaaVal = (azConfig && (azConfig.cciaa || azConfig.numeroRea)) || "";
+    const iscrTribVal = (azConfig && azConfig.iscrizioneTribunale) || "";
+
+    const aziendaInfo = {
+      codice: (azConfig && azConfig.codice) || azienda,
+      idAzienda: (azConfig && azConfig.idAzienda) || (azienda === "ciesse" ? 15000 : 4000),
+      nome: (azConfig && (azConfig.denominazione || azConfig.nome)) || (azienda === "ciesse" ? "CIESSE S.R.L." : "Ingegneria e Sistemi srl"),
+      ragioneSociale: (azConfig && (azConfig.denominazione || azConfig.nome)) || (azienda === "ciesse" ? "CIESSE S.R.L." : "Ingegneria e Sistemi srl"),
+      sede: (azConfig && azConfig.sede) || "",
+      indirizzo: viaCivico || (azConfig && azConfig.sede) || (azienda === "ciesse" ? "Via Luigi Galvani 36" : "Via Caduti Di Nassiriya N.67-69"),
+      via: (azConfig && azConfig.via) || "",
+      civico: (azConfig && azConfig.civico) || "",
+      cap: (azConfig && azConfig.cap) || (azienda === "ciesse" ? "20019" : "50018"),
+      citta: (azConfig && (azConfig.comune || azConfig.citta)) || (azienda === "ciesse" ? "SETTIMO MILANESE" : "SCANDICCI"),
+      provincia: (azConfig && azConfig.provincia) || (azienda === "ciesse" ? "MI" : "FI"),
+      telefono: (azConfig && azConfig.telefono) || "",
+      fax: (azConfig && azConfig.fax) || "",
+      email: (azConfig && azConfig.email) || "",
+      sito: (azConfig && azConfig.sito) || "",
+      pec: (azConfig && azConfig.pec) || "",
+      partitaIva: (azConfig && azConfig.partitaIva) || "",
+      codiceFiscale: (azConfig && (azConfig.codiceFiscale || azConfig.partitaIva)) || "",
+      legaleRappresentante: (azConfig && azConfig.legaleRappresentante) || "",
+      cfLegaleRappresentante: (azConfig && azConfig.cfLegaleRappresentante) || "",
+      cuc: (azConfig && azConfig.cuc) || "",
+      codiceSDI: (azConfig && azConfig.codiceSDI) || "",
+      codiceMittente: (azConfig && azConfig.codiceMittente) || "",
+      cciaa: cciaaVal,
+      numeroRea: (azConfig && azConfig.numeroRea) || "",
+      ufficio: (azConfig && azConfig.ufficioRegistroDitte) || "",
+      iscrizioneTribunale: iscrTribVal,
+      tribunale: iscrTribVal,
+      registroDitte: (azConfig && azConfig.registroDitte) || "",
+      capitaleSociale: (azConfig && azConfig.capitaleSociale) || 0,
+      datiBancari: (azConfig && azConfig.datiBancari) || "",
+      iban: (azConfig && azConfig.iban) || (azienda === "ciesse" ? "IT63D0306909563100000060355" : "IT63X0103038083000000688202"),
+      nomeBanca: (azConfig && azConfig.nomeBanca) || "",
+      contoCorrente: (azConfig && azConfig.contoCorrente) || "",
+      cab: (azConfig && azConfig.cab) || "",
+      abi: (azConfig && azConfig.abi) || "",
+      identificativoCreditore: (azConfig && azConfig.identificativoCreditore) || "",
+      logo: (azConfig && azConfig.logo) || (azienda === "ciesse" ? "logo_ciesse.png" : "logo.png")
     };
 
     res.json({
@@ -1167,5 +1188,20 @@ router.get("/fornitori/:idfornitore", async (req, res) => {
   }
 });
 
+/**
+ * GET /contabilita/aziende
+ * Restituisce l'elenco di tutte le aziende configurate nella tabella connessioni principale
+ */
+router.get("/aziende", async (req, res) => {
+  try {
+    const aziende = await dbaccess.getDatiAziende();
+    res.json(aziende);
+  } catch (err) {
+    console.error("[CONTABILITA] Errore elenco aziende:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione aziende" });
+  }
+});
+
 module.exports = router;
+
 

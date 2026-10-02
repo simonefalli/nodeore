@@ -1,6 +1,5 @@
 const odbc = require('odbc');
 
-// In local dev, load paths from env or use default fallback. In production, load from env.
 const pathIS = process.env.ACCESS_PATH_IS || 'C:\\Users\\simone\\Desktop\\datiditest\\TUTTEBASIDATIATTIVE\\I&S-BASEDATI.accdb';
 const pathCiesse = process.env.ACCESS_PATH_CIESSE || 'C:\\Users\\Simone\\Desktop\\datiditest\\TUTTEBASIDATIATTIVE\\CIESSE-BASEDATI.accdb';
 
@@ -56,10 +55,6 @@ async function getPoolCiesse() {
   return poolPromiseCiesse;
 }
 
-// Inizializzazione anticipata dei pool in background all'avvio
-getPoolIS().catch(() => {});
-getPoolCiesse().catch(() => {});
-
 function createConnectionWrapper(getPool) {
   return {
     query: async (sql) => {
@@ -76,9 +71,52 @@ function createConnectionWrapper(getPool) {
 const connectionIS = createConnectionWrapper(getPoolIS);
 const connectionCiesse = createConnectionWrapper(getPoolCiesse);
 
+// Inizializzazione anticipata dei pool backend
+getPoolIS().catch(() => {});
+getPoolCiesse().catch(() => {});
+
+// Dizionario anagrafiche e costanti societarie in memoria
+const aziendeCostanti = require('./config/aziende.json');
+
+/**
+ * Restituisce il dizionario completo di tutte le aziende configurate in memoria
+ */
+function getAllAziendeConfig() {
+  return aziendeCostanti;
+}
+
+/**
+ * Cerca l'azienda per codice mnemonico ('ies', 'ciesse', 'pratoallarmi'), per ID ('4000', '15000') o per nome.
+ * Ritorna l'anagrafica completa con indirizzo, partita IVA, dati bancari, PEC, ecc.
+ */
+async function getAziendaConfig(nomeAzienda) {
+  if (!nomeAzienda) return aziendeCostanti['ies'] || null;
+  const target = String(nomeAzienda).trim().toLowerCase();
+  
+  // 1. Chiave diretta (es. 'ies', 'ciesse', 'pratoallarmi')
+  if (aziendeCostanti[target]) {
+    return aziendeCostanti[target];
+  }
+
+  // 2. Alias frequenti
+  if (target === 'i&s' || target === '4000') return aziendeCostanti['ies'];
+  if (target === '15000') return aziendeCostanti['ciesse'];
+
+  // 3. Ricerca per idAzienda o match parziale su nome/denominazione
+  const entries = Object.values(aziendeCostanti);
+  const found = entries.find(a => {
+    return String(a.idAzienda) === target ||
+           (a.codice && a.codice.toLowerCase() === target) ||
+           (a.denominazione && a.denominazione.toLowerCase().includes(target)) ||
+           (a.nome && a.nome.toLowerCase().includes(target));
+  });
+
+  return found || aziendeCostanti['ies'] || null;
+}
+
 /**
  * Restituisce la connessione in base al parametro azienda (stringa/numero o oggetto req).
- * Se non viene specificata l'azienda o non corrisponde a 'ciesse', fa fallback su 'I&S'.
+ * Se 'ciesse' restituisce CIESSE-BASEDATI.accdb, altrimenti fallback su I&S-BASEDATI.accdb.
  * @param {string|number|object} azienda 
  * @returns {object} Connessione ODBC
  */
@@ -96,9 +134,9 @@ function getConnection(azienda) {
     name = String(azienda);
   }
 
-  // Se 'ciesse' o '2' (immaginando idAzienda = 2), restituisce la connessione CIESSE.
-  // Altrimenti fallback su I&S.
-  if (name && (name.toLowerCase() === 'ciesse' || name === '2')) {
+  const cleanName = (name || '').toLowerCase().trim();
+
+  if (cleanName === 'ciesse' || cleanName === '2') {
     return connectionCiesse;
   }
   
@@ -108,5 +146,7 @@ function getConnection(azienda) {
 module.exports = {
   getConnection,
   connectionIS,
-  connectionCiesse
+  connectionCiesse,
+  getAziendaConfig,
+  getAllAziendeConfig
 };
