@@ -821,7 +821,8 @@ router.get("/banca/movimenti", async (req, res) => {
   const connection = dbaccess.getConnection(req);
   try {
     const idConto = req.query.idconto ? parseInt(req.query.idconto) : null;
-    const idFornitore = req.query.idfornitore ? parseInt(req.query.idfornitore) : null;
+    const idFornitore = req.query.idfornitore ? parseInt(req.query.idfornitore) : (req.query.fornitore ? parseInt(req.query.fornitore) : null);
+    const idMovimento = req.query.id_movimento ? parseInt(req.query.id_movimento) : (req.query.idmovimento ? parseInt(req.query.idmovimento) : null);
     const idCliente = req.query.idcliente ? parseInt(req.query.idcliente) : null;
     const dataDa = req.query.data_da ? req.query.data_da.trim() : null;
     const dataA = req.query.data_a ? req.query.data_a.trim() : null;
@@ -837,6 +838,9 @@ router.get("/banca/movimenti", async (req, res) => {
     }
     if (idFornitore && idFornitore > 0) {
       whereClauses.push(`d.IDFORNITORE = ${idFornitore}`);
+    }
+    if (idMovimento && idMovimento > 0) {
+      whereClauses.push(`m.IDMOVIMENTOGENERALE = ${idMovimento}`);
     }
     if (idCliente && idCliente > 0) {
       whereClauses.push(`d.IDCLIENTE = ${idCliente}`);
@@ -1319,14 +1323,38 @@ router.post("/banca/incassi", async (req, res) => {
 });
 
 /**
+ * GET /contabilita/tipi-fornitori
+ * Elenco di tutti i tipi di fornitura da [D-01-T-TIPOFORNITORE]
+ */
+router.get("/tipi-fornitori", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const rows = await connection.query(`
+      SELECT IDTIPOFORNITURA, TIPOFORNITURA 
+      FROM [D-01-T-TIPOFORNITORE] 
+      WHERE TIPOFORNITURA IS NOT NULL 
+      ORDER BY TIPOFORNITURA ASC
+    `);
+    res.json(rows.map(r => ({
+      id: r.IDTIPOFORNITURA,
+      nome: r.TIPOFORNITURA
+    })));
+  } catch (err) {
+    console.error("[CONTABILITA] Errore elenco tipi fornitori:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione tipi fornitori" });
+  }
+});
+
+/**
  * GET /contabilita/fornitori
- * Ricerca e consultazione anagrafica fornitori
+ * Ricerca e consultazione anagrafica fornitori con filtri avanzati
  */
 router.get("/fornitori", async (req, res) => {
   const connection = dbaccess.getConnection(req);
   try {
     const q = req.query.q ? req.query.q.trim().replace(/'/g, "''") : '';
     const soloAttivi = req.query.solo_attivi === '1';
+    const tipoFornitura = parseInt(req.query.tipo_fornitura, 10);
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(10, parseInt(req.query.limit) || 30));
 
@@ -1336,7 +1364,11 @@ router.get("/fornitori", async (req, res) => {
     ];
 
     if (soloAttivi) {
-      whereClauses.push(`f.ATTIVO = '1'`);
+      whereClauses.push(`f.ATTIVO = True`);
+    }
+
+    if (!isNaN(tipoFornitura) && tipoFornitura > 0) {
+      whereClauses.push(`f.TIPOFORNITURA = ${tipoFornitura}`);
     }
 
     if (q) {
@@ -1352,6 +1384,7 @@ router.get("/fornitori", async (req, res) => {
       ];
       if (isNum) {
         searchParts.push(`f.[ID FORNITORE] = ${q}`);
+        searchParts.push(`f.IDCONTATOREGENERALE = ${q}`);
       }
       whereClauses.push(`(${searchParts.join(' OR ')})`);
     }
@@ -1367,6 +1400,7 @@ router.get("/fornitori", async (req, res) => {
     const maxTop = page * limit;
     const listSql = `
       SELECT TOP ${maxTop}
+        f.IDCONTATOREGENERALE,
         f.[ID FORNITORE] AS IDFORNITORE,
         f.NOME,
         f.RAGIONE_SO,
@@ -1376,16 +1410,20 @@ router.get("/fornitori", async (req, res) => {
         f.LUOGO,
         f.PROVINCIA,
         f.CAP,
+        c.CAP AS CAPPOS,
+        c.LOCALITA AS CAPLOCALITA,
+        c.PROVINCIA AS CAPPROV,
         f.TELEFONO,
         f.FAX,
         f.EMAIL,
         f.PECFORNITORE,
-        f.IBAN,
-        f.BANCA,
-        f.PAGAMENTO,
-        f.[SISTEMA PAGAMENTO] AS SISTEMAPAGAMENTO,
-        f.ATTIVO
-      FROM [D-13-T-FORNITORI] AS f
+        f.ATTIVO,
+        f.PRODUZIONE,
+        f.TIPOFORNITURA,
+        t.TIPOFORNITURA AS DESCTIPOFORNITURA
+      FROM ([D-13-T-FORNITORI] AS f
+      LEFT JOIN [D-01-T-TIPOFORNITORE] AS t ON f.TIPOFORNITURA = t.IDTIPOFORNITURA)
+      LEFT JOIN [X-05-T-CAP] AS c ON f.CAP = c.IDCAP
       ${whereSql}
       ORDER BY f.NOME ASC, f.[ID FORNITORE] ASC
     `;
@@ -1394,31 +1432,38 @@ router.get("/fornitori", async (req, res) => {
     const startIdx = (page - 1) * limit;
     const pageRows = allRows.slice(startIdx, startIdx + limit);
 
+    const toBool = (val) => val === true || val === 1 || val === '1' || val === -1 || val === '-1';
+
     res.json({
       totalRows,
       page,
       limit,
       totalPages: Math.ceil(totalRows / limit) || 1,
-      rows: pageRows.map(f => ({
-        idFornitore: f.IDFORNITORE,
-        nome: f.NOME || '',
-        ragioneSociale: f.RAGIONE_SO || f.NOME || '',
-        partitaIva: f.PARTITAIVA || '',
-        codiceFiscale: f.CODICEFISCALE || '',
-        via: f.VIA || '',
-        luogo: f.LUOGO || '',
-        provincia: f.PROVINCIA || '',
-        cap: f.CAP || '',
-        telefono: f.TELEFONO || '',
-        fax: f.FAX || '',
-        email: f.EMAIL || '',
-        pec: f.PECFORNITORE || '',
-        iban: f.IBAN || '',
-        banca: f.BANCA || '',
-        pagamento: f.PAGAMENTO || '',
-        sistemaPagamento: f.SISTEMAPAGAMENTO || '',
-        attivo: String(f.ATTIVO) === '1'
-      }))
+      rows: pageRows.map(f => {
+        const capVal = f.CAPPOS || (f.CAP && f.CAP > 0 ? String(f.CAP) : '');
+        const luogoVal = f.LUOGO || f.CAPLOCALITA || '';
+        const provVal = f.PROVINCIA || f.CAPPROV || '';
+        return {
+          idFornitore: f.IDFORNITORE,
+          idContatoreGenerale: f.IDCONTATOREGENERALE || null,
+          nome: f.NOME || '',
+          ragioneSociale: f.RAGIONE_SO || f.NOME || '',
+          partitaIva: f.PARTITAIVA || '',
+          codiceFiscale: f.CODICEFISCALE || '',
+          via: f.VIA || '',
+          luogo: luogoVal,
+          provincia: provVal,
+          cap: capVal,
+          telefono: f.TELEFONO || '',
+          fax: f.FAX || '',
+          email: f.EMAIL || '',
+          pec: f.PECFORNITORE || '',
+          idTipoFornitura: f.TIPOFORNITURA || 0,
+          descTipoFornitura: f.DESCTIPOFORNITURA || '',
+          attivo: toBool(f.ATTIVO),
+          produzione: toBool(f.PRODUZIONE)
+        };
+      })
     });
   } catch (err) {
     console.error("[CONTABILITA] Errore ricerca fornitori:", err.message || err);
@@ -1428,47 +1473,75 @@ router.get("/fornitori", async (req, res) => {
 
 /**
  * GET /contabilita/fornitori/:idfornitore
- * Dettaglio fornitore + statistiche pagamenti / movimenti
+ * Dettaglio completo fornitore (struttura scheda Access E-02-S-SCHEDAORDINAFORNITORI)
+ * + statistiche pagamenti / ultimi movimenti bancari
  */
 router.get("/fornitori/:idfornitore", async (req, res) => {
   const connection = dbaccess.getConnection(req);
   try {
-    const idFornitore = parseInt(req.params.idfornitore);
-    if (!idFornitore) {
+    const idFornitore = parseInt(req.params.idfornitore, 10);
+    if (!idFornitore || idFornitore <= 0) {
       return res.status(400).json({ error: "ID Fornitore non valido" });
     }
 
-    const rows = await connection.query(`
+    const detailSql = `
       SELECT TOP 1
-        f.[ID FORNITORE] AS IDFORNITORE,
-        f.NOME,
-        f.RAGIONE_SO,
-        f.[PARTITA IVA] AS PARTITAIVA,
-        f.[CODICE FISCALE] AS CODICEFISCALE,
-        f.VIA,
-        f.LUOGO,
-        f.PROVINCIA,
-        f.CAP,
-        f.TELEFONO,
-        f.FAX,
-        f.EMAIL,
-        f.PECFORNITORE,
-        f.IBAN,
-        f.BANCA,
-        f.PAGAMENTO,
-        f.[SISTEMA PAGAMENTO] AS SISTEMAPAGAMENTO,
-        f.ATTIVO
-      FROM [D-13-T-FORNITORI] AS f
+        f.*,
+        t.TIPOFORNITURA AS descTipoFornitura,
+        b.BANCA AS nomeFiliale,
+        b.CODABI,
+        b.CAB,
+        b.VIA AS viaFiliale,
+        c.CAP AS capRisolto,
+        c.LOCALITA AS localitaRisolta,
+        c.PROVINCIA AS provinciaRisolta,
+        m.PAGAMENTO AS descSistemaPagamento,
+        p.PAGAMENTO AS descCondizioniPagamento
+      FROM (((([D-13-T-FORNITORI] AS f
+      LEFT JOIN [D-01-T-TIPOFORNITORE] AS t ON f.TIPOFORNITURA = t.IDTIPOFORNITURA)
+      LEFT JOIN [X-04-T-FILIALEBANCARIA] AS b ON f.BANCA = b.[ID FILIALE BANCARIA])
+      LEFT JOIN [X-05-T-CAP] AS c ON f.CAP = c.IDCAP)
+      LEFT JOIN [G-15-T-MODOPAGAMENTO] AS m ON f.[SISTEMA PAGAMENTO] = m.[CODICE PAGAMENTO])
+      LEFT JOIN [X-01-T-PAGAMENTI] AS p ON f.PAGAMENTO = p.[ID PAGAMENTO]
       WHERE f.[ID FORNITORE] = ${idFornitore}
-    `);
+    `;
 
+    const rows = await connection.query(detailSql);
     if (rows.length === 0) {
       return res.status(404).json({ error: "Fornitore non trovato" });
     }
 
     const f = rows[0];
+    const toBool = (val) => val === true || val === 1 || val === '1' || val === -1 || val === '-1';
+    const formatDate = (d) => {
+      if (!d) return '';
+      if (d instanceof Date) {
+        if (isNaN(d.getTime())) return '';
+        return d.toISOString().substring(0, 10);
+      }
+      const str = String(d).trim();
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        return str.substring(0, 10);
+      }
+      return str;
+    };
 
-    // Recupera statistiche pagamenti e ultimi 10 movimenti bancari per questo fornitore
+    // Risoluzione CAP Spedizione se impostato
+    let capSpedizioneRisolto = null;
+    let localitaSpedizioneRisolta = null;
+    let provinciaSpedizioneRisolta = null;
+    if (f.CAPSPEDIZIONE && f.CAPSPEDIZIONE > 0) {
+      try {
+        const csRows = await connection.query(`SELECT TOP 1 CAP, LOCALITA, PROVINCIA FROM [X-05-T-CAP] WHERE IDCAP = ${f.CAPSPEDIZIONE}`);
+        if (csRows.length > 0) {
+          capSpedizioneRisolto = csRows[0].CAP;
+          localitaSpedizioneRisolta = csRows[0].LOCALITA;
+          provinciaSpedizioneRisolta = csRows[0].PROVINCIA;
+        }
+      } catch (eCs) {}
+    }
+
+    // Statistiche pagamenti e ultimi 10 movimenti bancari/cassa
     let stats = { totalePagato: 0, conteggioMovimenti: 0, ultimoPagamento: null };
     let ultimiMovimenti = [];
 
@@ -1505,41 +1578,123 @@ router.get("/fornitori/:idfornitore", async (req, res) => {
       ultimiMovimenti = ultMovRes.map(m => ({
         idMovGen: m.IDMOVIMENTOGENERALE,
         idMov: m.IDMOVIMENTO,
-        dataValuta: m.DATAVALUTA,
+        dataValuta: formatDate(m.DATAVALUTA),
         descrizione: m.DESCRIZIONEMOVIMENTO,
-        nomeConto: m.DESCRIZIONECONTO,
+        nomeConto: m.DESCRIZIONECONTO || '',
         uscite: Number(m.USCITE) || 0,
         entrate: Number(m.ENTRATE) || 0,
         idPagamento: m.IDPAGAMENTO,
         idFatturaFornitore: m.IDFATTURAFORNITORE
       }));
       if (ultMovRes.length > 0) {
-        stats.ultimoPagamento = ultMovRes[0].DATAVALUTA;
+        stats.ultimoPagamento = formatDate(ultMovRes[0].DATAVALUTA);
       }
     } catch (eStats) {
       console.warn("[CONTABILITA] Statistiche fornitore non disponibili:", eStats.message);
     }
 
+    const capSede = f.capRisolto || (f.CAP && f.CAP > 0 ? String(f.CAP) : '');
+    const capSped = capSpedizioneRisolto || (f.CAPSPEDIZIONE && f.CAPSPEDIZIONE > 0 ? String(f.CAPSPEDIZIONE) : '');
+
     res.json({
       fornitore: {
-        idFornitore: f.IDFORNITORE,
+        idFornitore: f['ID FORNITORE'],
+        idContatoreGenerale: f.IDCONTATOREGENERALE || null,
         nome: f.NOME || '',
         ragioneSociale: f.RAGIONE_SO || f.NOME || '',
-        partitaIva: f.PARTITAIVA || '',
-        codiceFiscale: f.CODICEFISCALE || '',
+        attivo: toBool(f.ATTIVO),
+        produzione: toBool(f.PRODUZIONE),
+        idTipoFornitura: f.TIPOFORNITURA || 0,
+        descTipoFornitura: f.descTipoFornitura || '',
+
+        // Sede Legale
         via: f.VIA || '',
-        luogo: f.LUOGO || '',
-        provincia: f.PROVINCIA || '',
-        cap: f.CAP || '',
+        luogo: f.LUOGO || f.localitaRisolta || '',
+        provincia: f.PROVINCIA || f.provinciaRisolta || '',
+        cap: capSede,
+        idCap: f.CAP || null,
+
+        // Sede Spedizione
+        viaSpedizione: f.VIASPEDIZIONE || '',
+        luogoSpedizione: localitaSpedizioneRisolta || f.LUOGO || '',
+        provinciaSpedizione: provinciaSpedizioneRisolta || f.PROVINCIA || '',
+        capSpedizione: capSped,
+        idCapSpedizione: f.CAPSPEDIZIONE || null,
+
+        // Contatti
         telefono: f.TELEFONO || '',
         fax: f.FAX || '',
         email: f.EMAIL || '',
         pec: f.PECFORNITORE || '',
+        emailCc: f.EMAILCC || '',
+
+        // Dati Fiscali
+        partitaIva: f['PARTITA IVA'] || '',
+        codiceFiscale: f['CODICE FISCALE'] || '',
+        spese: f.SPESE || '',
+
+        // Dati Bancari
+        idFiliale: f.BANCA || null,
+        nomeFiliale: f.nomeFiliale || '',
+        codAbi: f.CODABI || '',
+        cab: f.CAB || '',
+        viaFiliale: f.viaFiliale || '',
         iban: f.IBAN || '',
-        banca: f.BANCA || '',
-        pagamento: f.PAGAMENTO || '',
-        sistemaPagamento: f.SISTEMAPAGAMENTO || '',
-        attivo: String(f.ATTIVO) === '1'
+        idSistemaPagamento: f['SISTEMA PAGAMENTO'] || null,
+        descSistemaPagamento: f.descSistemaPagamento || '',
+        idCondizioniPagamento: f.PAGAMENTO || null,
+        descCondizioniPagamento: f.descCondizioniPagamento || '',
+
+        // Mansioni e Ruoli (14 checkbox Access)
+        ruoli: {
+          apprendista: toBool(f.APPRENDISTA),
+          operaio: toBool(f.OPERAIO),
+          impiegato: toBool(f.IMPIEGATO),
+          avvocato: toBool(f.AVVOCATO),
+          gpg: toBool(f.GPG),
+          portiere: toBool(f.PORTIERE),
+          rappresentante: toBool(f.RAPPRESENTANTE),
+          segnalatore: toBool(f.SEGNALATORE),
+          esattore: toBool(f.ESATTORE),
+          planetInstallatori: toBool(f.PLANETINSTALLATORI),
+          exGpg: toBool(f.EXGPG),
+          rimborsiKm: toBool(f.RIMBORSIKM),
+          addettoRiparazioni: toBool(f.ADDETTORIPARAZIONI),
+          addettoInstallazioni: toBool(f.ADDETTOINSTALLAZIONI)
+        },
+
+        // Dati Personale & Contratto
+        personale: {
+          dipendenteDiretto: toBool(f.DIPENDENTEDIRETTO),
+          assuntoPresso: f.ASSUNTOPRESSO || '',
+          dataAssunzione: formatDate(f.DATAASSUNZIONE),
+          scadenzaContratto: formatDate(f.SCADENZACONTRATTO),
+          dataDiNascita: formatDate(f.DATADINASCITA),
+          abilitatoSabatoMattina: toBool(f.ABILITATOSABATIMATTINA),
+          abilitatoReperibilitaNotturna: toBool(f.ABILITATOREPERIBILITANOTTURNA),
+          livelloOperaio: f.LIVELLOOPERAIO || 0,
+          pagaBase: Number(f.PAGABASE) || 0,
+          costoOrario: Number(f.COSTOORARIO) || 0,
+          premioOraStraordinario: Number(f.PREMIOORASTRAORDINARIO) || 0
+        },
+
+        // Coordinate Geografiche
+        coordinate: {
+          latitudine: f.LATITUDINE || '',
+          longitudine: f.LONGITUDINE || ''
+        },
+
+        // Dati Sistema / Accesso
+        sistema: {
+          username: f.USERNAME || '',
+          password: f.PASSWORD || '',
+          idUnivocoFornitori: f.IDUNIVOCOFORNITORI || '',
+          iniziali: f.INIZIALI || '',
+          colore: f.COLORE || '',
+          ordinamentoGpg: f.ORDINAMENTOGPG || '',
+          abilitatoOrdiniFornitori: toBool(f.ABILITATOORDINIAFORNITORI),
+          assegnatarioPostazione: toBool(f.ASSEGNATARIOPOSTAZIONE)
+        }
       },
       stats,
       ultimiMovimenti
