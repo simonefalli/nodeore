@@ -19,7 +19,26 @@ let poolPromiseIS = null;
 let poolCiesse = null;
 let poolPromiseCiesse = null;
 
+// Stato della modalità di manutenzione per ciascun database
+const maintenance = {
+  is: {
+    inMaintenance: false,
+    since: null,
+    timer: null,
+    durationMinutes: 30
+  },
+  ciesse: {
+    inMaintenance: false,
+    since: null,
+    timer: null,
+    durationMinutes: 30
+  }
+};
+
 async function getPoolIS() {
+  if (maintenance.is.inMaintenance) {
+    throw new Error("Il database I&S è temporaneamente scollegato per manutenzione/compattazione. Riprovare a breve.");
+  }
   if (poolIS) return poolIS;
   if (!poolPromiseIS) {
     poolPromiseIS = odbc.pool(connStrIS)
@@ -38,6 +57,9 @@ async function getPoolIS() {
 }
 
 async function getPoolCiesse() {
+  if (maintenance.ciesse.inMaintenance) {
+    throw new Error("Il database CIESSE è temporaneamente scollegato per manutenzione/compattazione. Riprovare a breve.");
+  }
   if (poolCiesse) return poolCiesse;
   if (!poolPromiseCiesse) {
     poolPromiseCiesse = odbc.pool(connStrCiesse)
@@ -163,11 +185,195 @@ async function getRawConnection(azienda) {
   return pool.connect();
 }
 
+const fs = require('fs');
+
+/**
+ * Scollega il pool ODBC specificato ('is', 'ciesse' o 'all') per consentire la compattazione manuale in Access.
+ * Imposta un timer di riapertura automatica (default 30 minuti).
+ */
+async function disconnectPool(target = 'all', minutes = 30) {
+  const tStr = String(target || 'all').toLowerCase();
+  const targets = (tStr === 'all') ? ['is', 'ciesse'] : [tStr];
+  const results = {};
+
+  for (const t of targets) {
+    if (t === 'is') {
+      if (maintenance.is.timer) clearTimeout(maintenance.is.timer);
+      maintenance.is.inMaintenance = true;
+      maintenance.is.since = new Date();
+      maintenance.is.durationMinutes = minutes;
+
+      if (poolIS) {
+        try {
+          await poolIS.close();
+          console.log('[ODBC] Pool I&S chiuso per manutenzione');
+        } catch (e) {
+          console.error('[ODBC] Errore chiusura pool I&S:', e);
+        }
+      }
+      poolIS = null;
+      poolPromiseIS = null;
+
+      if (minutes > 0) {
+        maintenance.is.timer = setTimeout(() => {
+          console.log('[ODBC] Timer manutenzione I&S scaduto. Riapertura automatica...');
+          reconnectPool('is').catch(err => console.error('[ODBC] Errore auto-riconnessione I&S:', err));
+        }, minutes * 60 * 1000);
+      }
+      results.is = { status: 'disconnected', minutes };
+    } else if (t === 'ciesse') {
+      if (maintenance.ciesse.timer) clearTimeout(maintenance.ciesse.timer);
+      maintenance.ciesse.inMaintenance = true;
+      maintenance.ciesse.since = new Date();
+      maintenance.ciesse.durationMinutes = minutes;
+
+      if (poolCiesse) {
+        try {
+          await poolCiesse.close();
+          console.log('[ODBC] Pool CIESSE chiuso per manutenzione');
+        } catch (e) {
+          console.error('[ODBC] Errore chiusura pool CIESSE:', e);
+        }
+      }
+      poolCiesse = null;
+      poolPromiseCiesse = null;
+
+      if (minutes > 0) {
+        maintenance.ciesse.timer = setTimeout(() => {
+          console.log('[ODBC] Timer manutenzione CIESSE scaduto. Riapertura automatica...');
+          reconnectPool('ciesse').catch(err => console.error('[ODBC] Errore auto-riconnessione CIESSE:', err));
+        }, minutes * 60 * 1000);
+      }
+      results.ciesse = { status: 'disconnected', minutes };
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Riapre il pool ODBC specificato ('is', 'ciesse' o 'all') terminando la modalità di manutenzione.
+ */
+async function reconnectPool(target = 'all') {
+  const tStr = String(target || 'all').toLowerCase();
+  const targets = (tStr === 'all') ? ['is', 'ciesse'] : [tStr];
+  const results = {};
+
+  for (const t of targets) {
+    if (t === 'is') {
+      if (maintenance.is.timer) clearTimeout(maintenance.is.timer);
+      maintenance.is.timer = null;
+      maintenance.is.inMaintenance = false;
+      maintenance.is.since = null;
+      try {
+        await getPoolIS();
+        results.is = { status: 'connected' };
+      } catch (err) {
+        results.is = { status: 'error', error: err.message };
+      }
+    } else if (t === 'ciesse') {
+      if (maintenance.ciesse.timer) clearTimeout(maintenance.ciesse.timer);
+      maintenance.ciesse.timer = null;
+      maintenance.ciesse.inMaintenance = false;
+      maintenance.ciesse.since = null;
+      try {
+        await getPoolCiesse();
+        results.ciesse = { status: 'connected' };
+      } catch (err) {
+        results.ciesse = { status: 'error', error: err.message };
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Restituisce le statistiche e lo stato del database specificato ('is' o 'ciesse')
+ */
+function getDbInfo(dbKey) {
+  const filePath = (dbKey === 'ciesse') ? pathCiesse : pathIS;
+  const laccdbPath = filePath.replace(/\.accdb$/i, '.laccdb');
+  const maint = (dbKey === 'ciesse') ? maintenance.ciesse : maintenance.is;
+  const isConnected = (dbKey === 'ciesse') ? (poolCiesse !== null) : (poolIS !== null);
+
+  let fileStats = { exists: false };
+  let laccdbStats = { exists: false };
+
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      fileStats = {
+        exists: true,
+        sizeBytes: stat.size,
+        sizeMb: (stat.size / (1024 * 1024)).toFixed(2),
+        sizeGb: (stat.size / (1024 * 1024 * 1024)).toFixed(2),
+        mtime: stat.mtime
+      };
+    }
+  } catch (e) {
+    fileStats = { exists: false, error: e.message };
+  }
+
+  try {
+    if (fs.existsSync(laccdbPath)) {
+      const stat = fs.statSync(laccdbPath);
+      laccdbStats = {
+        exists: true,
+        sizeBytes: stat.size,
+        mtime: stat.mtime
+      };
+    }
+  } catch (e) {
+    laccdbStats = { exists: false, error: e.message };
+  }
+
+  let remainingMinutes = 0;
+  if (maint.inMaintenance && maint.since && maint.durationMinutes) {
+    const elapsedMs = Date.now() - new Date(maint.since).getTime();
+    const remainingMs = (maint.durationMinutes * 60 * 1000) - elapsedMs;
+    remainingMinutes = Math.max(0, Math.ceil(remainingMs / 60000));
+  }
+
+  return {
+    key: dbKey,
+    name: (dbKey === 'ciesse') ? 'CIESSE' : 'I&S',
+    path: filePath,
+    laccdbPath: laccdbPath,
+    file: fileStats,
+    lock: laccdbStats,
+    isLocked: laccdbStats.exists,
+    poolConnected: isConnected,
+    inMaintenance: maint.inMaintenance,
+    maintenanceSince: maint.since,
+    durationMinutes: maint.durationMinutes,
+    remainingMinutes: remainingMinutes
+  };
+}
+
+/**
+ * Restituisce una panoramica di tutti i database per la dashboard
+ */
+function getSystemStatus() {
+  return {
+    timestamp: new Date(),
+    serverTime: new Date().toLocaleTimeString('it-IT'),
+    databases: {
+      is: getDbInfo('is'),
+      ciesse: getDbInfo('ciesse')
+    }
+  };
+}
+
 module.exports = {
   getConnection,
   getRawConnection,
   connectionIS,
   connectionCiesse,
   getAziendaConfig,
-  getAllAziendeConfig
+  getAllAziendeConfig,
+  disconnectPool,
+  reconnectPool,
+  getSystemStatus,
+  getDbInfo
 };

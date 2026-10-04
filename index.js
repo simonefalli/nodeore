@@ -34,6 +34,7 @@ const ordiniRoute = require('./routes/ordini/ordini');
 const preventiviRoute = require('./routes/preventivi/preventivi');
 const contabilitaRoute = require('./routes/contabilita/contabilita');
 const databrowserRoute = require('./routes/databrowser/databrowser');
+const manutenzioneRoute = require('./routes/manutenzione/manutenzione');
 app.use(
   cors({
     origin: "*",
@@ -67,6 +68,7 @@ app.use("/ordini" , ordiniRoute);
 app.use("/preventivi", preventiviRoute);
 app.use("/contabilita", contabilitaRoute);
 app.use("/databrowser", databrowserRoute);
+app.use("/manutenzione", manutenzioneRoute);
 /*
 
 app.post('/upload', upload.single('photo'), (req, res ,next) => {
