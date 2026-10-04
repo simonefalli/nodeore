@@ -143,8 +143,29 @@ function getConnection(azienda) {
   return connectionIS;
 }
 
+/**
+ * Restituisce una connessione ODBC diretta dal pool (supporta beginTransaction, commit, rollback)
+ * NOTA: la connessione deve essere chiusa dal chiamante con conn.close()
+ */
+async function getRawConnection(azienda) {
+  let name = '';
+  if (azienda && typeof azienda === 'object') {
+    name = (azienda.query && azienda.query.azienda) || 
+           (azienda.body && azienda.body.azienda) || 
+           (azienda.user && (azienda.user.azienda || azienda.user.idAzienda)) || 
+           '';
+  } else if (typeof azienda === 'string' || typeof azienda === 'number') {
+    name = String(azienda);
+  }
+
+  const cleanName = (name || '').toLowerCase().trim();
+  const pool = (cleanName === 'ciesse' || cleanName === '2') ? await getPoolCiesse() : await getPoolIS();
+  return pool.connect();
+}
+
 module.exports = {
   getConnection,
+  getRawConnection,
   connectionIS,
   connectionCiesse,
   getAziendaConfig,

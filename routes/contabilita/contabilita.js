@@ -756,22 +756,42 @@ router.get("/banca/conti", async (req, res) => {
       ORDER BY IDCONTO ASC
     `);
 
-    // Per ogni conto, recupera l'ultimo saldo registrato
+    // Determina l'anno contabile attivo (il più recente presente nei movimenti)
+    const maxAnnoRes = await connection.query(`SELECT MAX(ANNOMOVIMENTO) AS MAXANNO FROM [I-09-T-TUTTIMOVIMENTIBANCA]`);
+    const activeYear = (maxAnnoRes.length > 0 && maxAnnoRes[0].MAXANNO) ? maxAnnoRes[0].MAXANNO : new Date().getFullYear();
+
+    // Per ogni conto, calcola il saldo reale (Entrate - Uscite dell'anno attivo, comprensivo del riporto iniziale)
     const contiConSaldo = await Promise.all(
       conti.map(async (c) => {
         try {
-          const s = await connection.query(`
-            SELECT TOP 1 SALDO, DATAVALUTA
-            FROM [I-09-T-TUTTIMOVIMENTIBANCA]
-            WHERE IDCONTO = ${c.IDCONTO} AND SALDO IS NOT NULL
-            ORDER BY DATAVALUTA DESC, IDMOVIMENTOGENERALE DESC
+          const saldoRes = await connection.query(`
+            SELECT 
+              SUM(d.[ENTRATE€]) AS TOT_ENTRATE, 
+              SUM(d.[USCITE€]) AS TOT_USCITE,
+              SUM(d.[ENTRATE€]) - SUM(d.[USCITE€]) AS SALDO
+            FROM [I-09-T-TUTTIMOVIMENTIBANCA] AS m
+            INNER JOIN [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d ON m.IDMOVIMENTOGENERALE = d.IDMOVIMENTOGENERALE
+            WHERE m.IDCONTO = ${c.IDCONTO} AND m.ANNOMOVIMENTO = ${activeYear}
           `);
+
+          const ultDataRes = await connection.query(`
+            SELECT TOP 1 DATAVALUTA
+            FROM [I-09-T-TUTTIMOVIMENTIBANCA]
+            WHERE IDCONTO = ${c.IDCONTO} AND ANNOMOVIMENTO = ${activeYear}
+            ORDER BY DATAVALUTA DESC, IDMOVIMENTO DESC
+          `);
+
+          const saldoCalcolato = (saldoRes.length > 0 && saldoRes[0].SALDO !== null)
+            ? Math.round(Number(saldoRes[0].SALDO) * 100) / 100
+            : 0;
+
           return {
             idConto: c.IDCONTO,
             descrizioneConto: c.DESCRIZIONECONTO,
             causaleContoContabilita: c.CAUSALECONTOCONTABILITA,
-            ultimoSaldo: s.length > 0 && s[0].SALDO !== null ? Number(s[0].SALDO) : 0,
-            dataUltimoSaldo: s.length > 0 ? s[0].DATAVALUTA : null
+            ultimoSaldo: saldoCalcolato,
+            dataUltimoSaldo: ultDataRes.length > 0 ? ultDataRes[0].DATAVALUTA : null,
+            annoRiferimento: activeYear
           };
         } catch (e) {
           return {
@@ -779,7 +799,8 @@ router.get("/banca/conti", async (req, res) => {
             descrizioneConto: c.DESCRIZIONECONTO,
             causaleContoContabilita: c.CAUSALECONTOCONTABILITA,
             ultimoSaldo: 0,
-            dataUltimoSaldo: null
+            dataUltimoSaldo: null,
+            annoRiferimento: activeYear
           };
         }
       })
@@ -896,28 +917,30 @@ router.get("/banca/movimenti", async (req, res) => {
       LEFT JOIN [D-13-T-FORNITORI] AS f ON d.IDFORNITORE = f.[ID FORNITORE])
       LEFT JOIN [P-04-T-CLIENTI] AS c ON d.IDCLIENTE = c.[ID CAF])
       ${whereSql}
-      ORDER BY m.DATAVALUTA DESC, m.IDMOVIMENTOGENERALE DESC, d.IDPROGRESSIVOGENERALE DESC
+      ORDER BY m.IDMOVIMENTOGENERALE DESC, d.IDPROGRESSIVOGENERALE DESC
     `;
 
     const allRows = await connection.query(listSql);
     const startIdx = (page - 1) * limit;
     const pageRows = allRows.slice(startIdx, startIdx + limit);
 
-    // Saldo attuale del conto selezionato (se filtrato per conto)
+    // Saldo attuale del conto selezionato (o somma di tutti i conti) per l'anno contabile attivo
     let saldoAttualeConto = null;
-    if (idConto) {
-      try {
-        const s = await connection.query(`
-          SELECT TOP 1 SALDO
-          FROM [I-09-T-TUTTIMOVIMENTIBANCA]
-          WHERE IDCONTO = ${idConto} AND SALDO IS NOT NULL
-          ORDER BY DATAVALUTA DESC, IDMOVIMENTOGENERALE DESC
-        `);
-        if (s.length > 0 && s[0].SALDO !== null) {
-          saldoAttualeConto = Number(s[0].SALDO);
-        }
-      } catch (e) {}
-    }
+    try {
+      const maxAnnoRes = await connection.query(`SELECT MAX(ANNOMOVIMENTO) AS MAXANNO FROM [I-09-T-TUTTIMOVIMENTIBANCA]`);
+      const activeYear = (maxAnnoRes.length > 0 && maxAnnoRes[0].MAXANNO) ? maxAnnoRes[0].MAXANNO : new Date().getFullYear();
+
+      const contoClause = (idConto && idConto > 0) ? `m.IDCONTO = ${idConto} AND` : '';
+      const s = await connection.query(`
+        SELECT SUM(d.[ENTRATE€]) - SUM(d.[USCITE€]) AS SALDO
+        FROM [I-09-T-TUTTIMOVIMENTIBANCA] AS m
+        INNER JOIN [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] AS d ON m.IDMOVIMENTOGENERALE = d.IDMOVIMENTOGENERALE
+        WHERE ${contoClause} m.ANNOMOVIMENTO = ${activeYear}
+      `);
+      if (s.length > 0 && s[0].SALDO !== null) {
+        saldoAttualeConto = Math.round(Number(s[0].SALDO) * 100) / 100;
+      }
+    } catch (e) {}
 
     res.json({
       kpi: {
@@ -953,6 +976,345 @@ router.get("/banca/movimenti", async (req, res) => {
   } catch (err) {
     console.error("[CONTABILITA] Errore movimenti banca:", err.message || err);
     res.status(500).json({ error: err.message || "Errore estrazione movimenti bancari" });
+  }
+});
+
+/**
+ * GET /contabilita/banca/opzioni-incasso
+ * Estrae le opzioni per la registrazione incassi (modi pagamento e causali chiusura)
+ */
+router.get("/banca/opzioni-incasso", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  try {
+    const [modi, causali] = await Promise.all([
+      connection.query(`SELECT [CODICE PAGAMENTO] AS id, [PAGAMENTO] AS nome FROM [G-15-T-MODOPAGAMENTO] ORDER BY [CODICE PAGAMENTO] ASC`),
+      connection.query(`SELECT [IDCAUSALECHIUSURA] AS id, [DESCRIZIONECAUSALE] AS nome FROM [G-05-T-CAUSALECHIUSURAINCASSI] ORDER BY [IDCAUSALECHIUSURA] ASC`)
+    ]);
+
+    res.json({
+      modiPagamento: (modi || []).map(m => ({ id: m.id, nome: m.nome })),
+      causaliChiusura: (causali || []).map(c => ({ id: c.id, nome: c.nome }))
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore opzioni incasso:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore estrazione opzioni incasso" });
+  }
+});
+
+/**
+ * GET /contabilita/banca/cliente-dettagli/:idcaf
+ * Estrae anagrafica cliente, impianti e fatture aperte non ancora incassate
+ */
+router.get("/banca/cliente-dettagli/:idcaf", async (req, res) => {
+  const connection = dbaccess.getConnection(req);
+  const idCaf = parseInt(req.params.idcaf, 10);
+  if (!idCaf || idCaf <= 0) {
+    return res.status(400).json({ error: "ID CAF non valido" });
+  }
+
+  try {
+    // 1. Anagrafica cliente
+    const sqlCliente = `
+      SELECT 
+        [ID CAF] AS idCaf,
+        [RAGIONE SOCIALE] AS ragioneSociale,
+        [PARTITA IVA] AS partitaIva,
+        [CODICE FISCALE] AS codiceFiscale,
+        [LUOGO POSTALE] AS luogoPostale,
+        [LUOGO LEGALE] AS luogoLegale,
+        [CAP POSTALE] AS capPostale,
+        [CAP LEGALE] AS capLegale,
+        [CONTO CORRENTE] AS contoCorrente,
+        CODICEIBAN AS iban,
+        [CODICE BANCA] AS codiceBanca,
+        NUMERO_RID AS rid
+      FROM [P-04-T-CLIENTI]
+      WHERE [ID CAF] = ${idCaf}
+    `;
+    const clientRows = await connection.query(sqlCliente);
+    const cliente = clientRows.length > 0 ? clientRows[0] : null;
+
+    if (!cliente) {
+      return res.status(404).json({ error: "Cliente non trovato" });
+    }
+
+    // 2. Impianti cliente
+    const sqlImpianti = `
+      SELECT 
+        [NUMERO IMPIANTO] AS idImpianto,
+        [NOME] AS nomeImpianto,
+        [LUOGO IMPIANTO] AS indirizzo
+      FROM [P-07-T-IMPIANTI]
+      WHERE [NUMERO CAF] = ${idCaf}
+      ORDER BY [NUMERO IMPIANTO] ASC
+    `;
+    const impianti = await connection.query(sqlImpianti);
+
+    // 3. Fatture/Incassi aperti (INCASSATA = '0' o NULL)
+    const sqlOpen = `
+      SELECT 
+        [ID PAGAMENTO],
+        IDPAGAMENTOGENERALE,
+        NUMEROFATTURA,
+        DATAFATTURA,
+        DATAPAGAMENTO,
+        [TOTALE€],
+        [5MODOPAGAMENTO],
+        ID5MODOPAGAMENTO,
+        NUMEROIMPIANTO
+      FROM [G-01-T-INCASSI]
+      WHERE NUMEROCAF = ${idCaf} AND (INCASSATA = '0' OR INCASSATA IS NULL)
+      ORDER BY NUMEROFATTURA DESC, [ID PAGAMENTO] DESC
+    `;
+    const openRows = await connection.query(sqlOpen);
+
+    res.json({
+      cliente: {
+        idCaf: cliente.idCaf,
+        ragioneSociale: cliente.ragioneSociale,
+        partitaIva: cliente.partitaIva || '',
+        codiceFiscale: cliente.codiceFiscale || '',
+        luogo: cliente.luogoPostale || cliente.luogoLegale || '',
+        cap: cliente.capPostale || cliente.capLegale || '',
+        contoCorrente: cliente.contoCorrente || '',
+        iban: cliente.iban || '',
+        codiceBanca: cliente.codiceBanca || '',
+        rid: cliente.rid || ''
+      },
+      impianti: (impianti || []).map(i => ({
+        idImpianto: i.idImpianto,
+        nome: i.nomeImpianto,
+        indirizzo: i.indirizzo || ''
+      })),
+      fattureAperte: (openRows || []).map(f => ({
+        idPagamento: f['ID PAGAMENTO'],
+        idPagamentoGenerale: f.IDPAGAMENTOGENERALE,
+        numeroFattura: f.NUMEROFATTURA,
+        dataFattura: f.DATAFATTURA,
+        dataScadenza: f.DATAPAGAMENTO,
+        totale: Number(f['TOTALE€']) || 0,
+        modoPagamento: f['5MODOPAGAMENTO'] || '',
+        idModoPagamento: f.ID5MODOPAGAMENTO || null,
+        numeroImpianto: f.NUMEROIMPIANTO || 0
+      }))
+    });
+  } catch (err) {
+    console.error("[CONTABILITA] Errore cliente dettagli incasso:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore recupero dettagli cliente" });
+  }
+});
+
+/**
+ * POST /contabilita/banca/incassi
+ * Registra un nuovo incasso bancario / cassa:
+ * - Crea record testata in [I-09-T-TUTTIMOVIMENTIBANCA]
+ * - Crea riga dettaglio in [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA]
+ * - Aggiorna lo stato in [G-01-T-INCASSI] se collegato a fattura aperta
+ * - Gestisce transazione atomica (commit / rollback)
+ */
+router.post("/banca/incassi", async (req, res) => {
+  let connection = null;
+  try {
+    const {
+      idConto,
+      dataValuta,
+      importo,
+      idCaf,
+      ragioneSociale,
+      causaleChiusura = 3,
+      idModoPagamento,
+      modoPagamentoDesc,
+      numeroFattura,
+      idPagamento,
+      descrizioneMovimento
+    } = req.body;
+
+    const parsedIdConto = parseInt(idConto, 10);
+    const parsedImporto = Math.round(parseFloat(importo) * 100) / 100;
+    const parsedIdCaf = idCaf ? parseInt(idCaf, 10) : 0;
+    const parsedCausaleChiusura = parseInt(causaleChiusura, 10) || 3;
+    const cleanRagione = (ragioneSociale || '').trim().replace(/'/g, "''");
+
+    if (!parsedIdConto || parsedIdConto <= 0) {
+      return res.status(400).json({ error: "Conto obbligatorio non valido." });
+    }
+    if (!cleanRagione) {
+      return res.status(400).json({ error: "Cliente / Ragione sociale obbligatoria." });
+    }
+    if (isNaN(parsedImporto) || parsedImporto <= 0) {
+      return res.status(400).json({ error: "Importo non valido (deve essere maggiore di zero)." });
+    }
+    if (!dataValuta || !/^\d{4}-\d{2}-\d{2}$/.test(dataValuta)) {
+      return res.status(400).json({ error: "Data valuta non valida (formato AAAA-MM-GG)." });
+    }
+
+    // Default causale uscita banca e prefisso descrizione in base al conto
+    let defaultCausaleUscita = 6; // Bonifico da cliente
+    let defaultDescPrefix = 'Accredito Bonifico da Cliente';
+    let defaultModoId = 8; // BONIFICO BANCARIO
+    let defaultModoNome = 'BONIFICO BANCARIO';
+
+    if (parsedIdConto === 2) { // CASSA
+      defaultCausaleUscita = 2; // Incasso FATTURA contanti
+      defaultDescPrefix = 'Incasso FATTURA contanti';
+      defaultModoId = 3; // RIM.DIR.
+      defaultModoNome = 'RIM.DIR.';
+    } else if (parsedIdConto === 3) { // POSTA
+      defaultCausaleUscita = 22; // Incasso C/Postale
+      defaultDescPrefix = 'Incasso C/Postale';
+      defaultModoId = 7; // BOLLETTINO POST
+      defaultModoNome = 'BOLLETTINO POST';
+    }
+
+    const finalModoId = idModoPagamento ? parseInt(idModoPagamento, 10) : defaultModoId;
+    const finalModoDesc = (modoPagamentoDesc || defaultModoNome).trim().replace(/'/g, "''");
+    const autoDesc = `${defaultDescPrefix}-${parsedIdCaf || ''}-${cleanRagione}`;
+    const finalDesc = (descrizioneMovimento || autoDesc).trim().replace(/'/g, "''");
+
+    const anno = new Date(dataValuta).getFullYear();
+    const nowIso = new Date().toISOString();
+    const dateValutaFmt = `${dataValuta} 00:00:00`;
+    const dateInserimentoFmt = `${nowIso.substring(0, 10)} ${nowIso.substring(11, 19)}`;
+
+    connection = await dbaccess.getRawConnection(req);
+    await connection.beginTransaction();
+
+    try {
+      // 1. Calcola next IDMOVIMENTOGENERALE
+      const maxGenRes = await connection.query(`SELECT MAX(IDMOVIMENTOGENERALE) AS max_gen FROM [I-09-T-TUTTIMOVIMENTIBANCA]`);
+      const nextIdMovGenerale = ((maxGenRes.length > 0 && maxGenRes[0].max_gen) ? parseInt(maxGenRes[0].max_gen) : 0) + 1;
+
+      // 2. Calcola next IDMOVIMENTO per questo conto e anno
+      const maxMovRes = await connection.query(`SELECT MAX(IDMOVIMENTO) AS max_mov FROM [I-09-T-TUTTIMOVIMENTIBANCA] WHERE IDCONTO = ${parsedIdConto} AND ANNOMOVIMENTO = ${anno}`);
+      const nextIdMovimento = ((maxMovRes.length > 0 && maxMovRes[0].max_mov) ? parseInt(maxMovRes[0].max_mov) : 0) + 1;
+
+      // 3. Calcola previous SALDO per questo conto
+      const lastSaldoRes = await connection.query(`SELECT TOP 1 SALDO FROM [I-09-T-TUTTIMOVIMENTIBANCA] WHERE IDCONTO = ${parsedIdConto} ORDER BY IDMOVIMENTOGENERALE DESC`);
+      const prevSaldo = (lastSaldoRes.length > 0 && lastSaldoRes[0].SALDO !== null) ? Number(lastSaldoRes[0].SALDO) : 0;
+      const newSaldo = Math.round((prevSaldo + parsedImporto) * 100) / 100;
+
+      // 4. Inserimento testata movimento [I-09-T-TUTTIMOVIMENTIBANCA]
+      const sqlInsertI09 = `
+        INSERT INTO [I-09-T-TUTTIMOVIMENTIBANCA] (
+          IDMOVIMENTOGENERALE,
+          IDMOVIMENTO,
+          ANNOMOVIMENTO,
+          IDCONTO,
+          DATAVALUTA,
+          DESCRIZIONEMOVIMENTO,
+          CONTROLLATO,
+          CONTROLLOCC,
+          SALDO,
+          DATAINSERIMENTOMOVIMENTO,
+          NONESPORTARE
+        ) VALUES (
+          ${nextIdMovGenerale},
+          ${nextIdMovimento},
+          ${anno},
+          ${parsedIdConto},
+          #${dateValutaFmt}#,
+          '${finalDesc}',
+          '0',
+          '0',
+          ${newSaldo},
+          #${dateInserimentoFmt}#,
+          0
+        )
+      `;
+      await connection.query(sqlInsertI09);
+
+      // 5. Inserimento riga dettaglio [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA]
+      const parsedIdPagamento = idPagamento ? parseInt(idPagamento, 10) : 0;
+      const parsedNumFattura = numeroFattura ? parseInt(numeroFattura, 10) : 0;
+
+      const sqlInsertI02 = `
+        INSERT INTO [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] (
+          IDMOVIMENTOGENERALE,
+          IDMOVIMENTO,
+          IDCLIENTE,
+          IDFATTURA,
+          IDFORNITORE,
+          IDFATTURAFORNITORE,
+          ENTRATE,
+          [ENTRATE€],
+          USCITE,
+          [USCITE€],
+          CAUSALEUSCITABANCA,
+          IDPAGAMENTO,
+          CONTROLLOESEGUITO,
+          SELEZIONATO
+        ) VALUES (
+          ${nextIdMovGenerale},
+          ${nextIdMovimento},
+          ${parsedIdCaf},
+          ${parsedNumFattura},
+          0,
+          0,
+          0,
+          ${parsedImporto},
+          0,
+          0,
+          ${defaultCausaleUscita},
+          ${parsedIdPagamento},
+          0,
+          0
+        )
+      `;
+      await connection.query(sqlInsertI02);
+
+      // 6. Recupero IDPROGRESSIVOGENERALE generato dal contatore
+      const identityRes = await connection.query(`SELECT @@IDENTITY AS ID`);
+      const idProgressivoGenerale = (identityRes.length > 0 && identityRes[0].ID) ? parseInt(identityRes[0].ID, 10) : 0;
+
+      // 7. Se è collegato a un incasso esistente in [G-01-T-INCASSI], aggiorniamo lo stato
+      if (parsedIdPagamento > 0) {
+        let sqlUpdateG01 = `
+          UPDATE [G-01-T-INCASSI]
+          SET 
+            INCASSATA = 'SI',
+            DATAPAGAMENTO = #${dateValutaFmt}#,
+            CAUSALECHIUSURAINCASSO = ${parsedCausaleChiusura},
+            IDMOVIMENTOBANCA = ${idProgressivoGenerale}
+        `;
+        if (finalModoId) {
+          sqlUpdateG01 += `, ID5MODOPAGAMENTO = ${finalModoId}, [5MODOPAGAMENTO] = '${finalModoDesc}'`;
+        }
+        if (parsedCausaleChiusura === 5) {
+          sqlUpdateG01 += `, PAGATOPARZIALMENTE = 1, CIFRAPAGAMENTOPARZIALE = ${parsedImporto}`;
+        }
+        sqlUpdateG01 += ` WHERE [ID PAGAMENTO] = ${parsedIdPagamento}`;
+
+        await connection.query(sqlUpdateG01);
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "Incasso registrato con successo",
+        dati: {
+          idMovimentoGenerale: nextIdMovGenerale,
+          idMovimento: nextIdMovimento,
+          idDettaglio: idProgressivoGenerale,
+          idPagamento: parsedIdPagamento,
+          idConto: parsedIdConto,
+          importo: parsedImporto,
+          saldoAggiornato: newSaldo
+        }
+      });
+    } catch (txErr) {
+      if (connection) {
+        try { await connection.rollback(); } catch(rbErr) {}
+      }
+      throw txErr;
+    } finally {
+      if (connection) {
+        try { await connection.close(); } catch(clErr) {}
+      }
+    }
+  } catch (err) {
+    console.error("[CONTABILITA] Errore inserimento incasso:", err.message || err);
+    res.status(500).json({ error: err.message || "Errore durante il salvataggio dell'incasso" });
   }
 });
 

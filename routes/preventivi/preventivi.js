@@ -18,7 +18,7 @@ router.get("/trattative", async (req, res) => {
   const connection = dbaccess.getConnection(req);
   const aperte = req.query.aperte === "1";
   const idimpianto = req.query.idimpianto ? parseInt(req.query.idimpianto, 10) : null;
-  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 100;
+  const limit = req.query.limit !== undefined ? parseInt(req.query.limit, 10) : 5000;
 
   let whereClauses = ["1=1"];
   if (aperte) {
@@ -29,9 +29,10 @@ router.get("/trattative", async (req, res) => {
   }
 
   const whereStr = whereClauses.join(" AND ");
+  const topClause = (limit && limit > 0) ? `TOP ${limit}` : '';
 
   const sql = `
-    SELECT TOP ${limit}
+    SELECT ${topClause}
       T.IDTRATTATIVA,
       T.DATAINIZIOTRATTATIVA,
       T.IDIMPIANTO,
@@ -50,7 +51,8 @@ router.get("/trattative", async (req, res) => {
       O.IDORDINE,
       O.DATAORDINE,
       O.[IMPORTOORDINE€] AS IMPORTOORDINE,
-      O.ESEGUITO AS ORDINEESEGUITO
+      O.ESEGUITO AS ORDINEESEGUITO,
+      O.ANNULLATOIL AS ORDINEANNULLATOIL
     FROM (((((([A-01-T-TRATTATIVE] AS T
     LEFT JOIN [A-02-T-PREVENTIVI] AS P ON T.IDTRATTATIVA = P.IDTRATTATIVA)
     LEFT JOIN [P-07-T-IMPIANTI] AS I ON T.IDIMPIANTO = I.[NUMERO IMPIANTO])
