@@ -25,7 +25,7 @@ const cantieriAttiviRoutes = require("./routes/cantieri/cantieriattivi");
 const impiantiRoutes = require("./routes/impianti/impianti");
 const chiamateRoutes = require("./routes/chiamate/chiamate");
 const getchiamatasingola = require("./routes/chiamate/getchiamatasingola");
-const uploadRoutes = require("./routes/rimborsi/upload");
+// const uploadRoutes = require("./routes/rimborsi/upload");
 const manutenzionEngie = require("./routes/prova/manutenzioniengie");
 const chiamatesuimpianti = require("./routes/prova/chiamatesuimpianti");
 const chiudichiamatadaphp = require("./routes/chiamate/chiudichiamatadaphp");
@@ -46,6 +46,27 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json()); //qui
 //app.use(morgan('combined')); // da usare per debug
 
+// Middleware di sicurezza globale: autorizza SOLO IP locali (127.0.0.1 / ::1) e classe LAN aziendale (192.168.x.x)
+app.use((req, res, next) => {
+  let ip = req.headers['x-forwarded-for'] 
+    ? req.headers['x-forwarded-for'].split(',')[0].trim() 
+    : (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || req.ip || '';
+
+  // Normalizza prefisso IPv6 (es. ::ffff:192.168.1.50 -> 192.168.1.50)
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.substring(7);
+  }
+
+  const isAllowed = ip.startsWith('192.168.') || ip === '127.0.0.1' || ip === '::1';
+
+  if (!isAllowed) {
+    console.warn(`[SICUREZZA - ACCESSO BLOCCATO] IP esterno non autorizzato: '${ip}' su ${req.method} ${req.originalUrl}`);
+    return res.status(403).json({ error: 'Accesso negato: indirizzo IP non autorizzato' });
+  }
+
+  next();
+});
+
 app.use("/api", apiRoutes);
 app.use("/utenti", utentiRoutes);
 app.use("/utentiattivi", utentiAttiviRoutes);
@@ -59,7 +80,7 @@ app.use("/ore", oreRoutes);
 app.use("/impianti", impiantiRoutes);
 app.use("/chiamate", chiamateRoutes);
 app.use("/getchiamatasingola", getchiamatasingola);
-app.use("/upload", uploadRoutes);
+// app.use("/upload", uploadRoutes); // DISABILITATA per sicurezza (rotta obsoleta non usata dal gestionale)
 app.use("/manutenzioniengie", manutenzionEngie);
 app.use("/chiamatesuimpianti", chiamatesuimpianti);
 app.use("/chiudichiamatadaphp", chiudichiamatadaphp);
