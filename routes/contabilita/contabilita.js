@@ -1227,68 +1227,195 @@ router.post("/banca/incassi", async (req, res) => {
       `;
       await connection.query(sqlInsertI09);
 
-      // 5. Inserimento riga dettaglio [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA]
-      const parsedIdPagamento = idPagamento ? parseInt(idPagamento, 10) : 0;
-      const parsedNumFattura = numeroFattura ? parseInt(numeroFattura, 10) : 0;
+      // 5. Inserimento righe dettaglio [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA]
+      // Supporta sia singola fattura (legacy: idPagamento/numeroFattura) sia array fatture: [{ idPagamento, numeroFattura, importo, causaleChiusura }]
+      let fattureList = [];
+      if (Array.isArray(fatture) && fatture.length > 0) {
+        fattureList = fatture.map(f => {
+          const imp = f.importo !== undefined ? parseFloat(f.importo) : (parseFloat(f.totale) || 0);
+          return {
+            idPagamento: parseInt(f.idPagamento, 10) || 0,
+            numeroFattura: parseInt(f.numeroFattura, 10) || 0,
+            importo: Math.round((isNaN(imp) ? 0 : imp) * 100) / 100,
+            causaleChiusura: parseInt(f.causaleChiusura, 10) || parsedCausaleChiusura
+          };
+        }).filter(f => f.idPagamento > 0 || f.numeroFattura > 0 || f.importo > 0);
+      } else if (idPagamento || numeroFattura) {
+        fattureList.push({
+          idPagamento: idPagamento ? parseInt(idPagamento, 10) : 0,
+          numeroFattura: numeroFattura ? parseInt(numeroFattura, 10) : 0,
+          importo: parsedImporto,
+          causaleChiusura: parsedCausaleChiusura
+        });
+      }
 
-      const sqlInsertI02 = `
-        INSERT INTO [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] (
-          IDMOVIMENTOGENERALE,
-          IDMOVIMENTO,
-          IDCLIENTE,
-          IDFATTURA,
-          IDFORNITORE,
-          IDFATTURAFORNITORE,
-          ENTRATE,
-          [ENTRATE€],
-          USCITE,
-          [USCITE€],
-          CAUSALEUSCITABANCA,
-          IDPAGAMENTO,
-          CONTROLLOESEGUITO,
-          SELEZIONATO
-        ) VALUES (
-          ${nextIdMovGenerale},
-          ${nextIdMovimento},
-          ${parsedIdCaf},
-          ${parsedNumFattura},
-          0,
-          0,
-          0,
-          ${parsedImporto},
-          0,
-          0,
-          ${defaultCausaleUscita},
-          ${parsedIdPagamento},
-          0,
-          0
-        )
-      `;
-      await connection.query(sqlInsertI02);
+      // Se c'è una sola fattura e il suo importo differisce da parsedImporto (es. pagamento parziale o personalizzato)
+      if (fattureList.length === 1 && Math.abs(fattureList[0].importo - parsedImporto) > 0.009) {
+        fattureList[0].importo = parsedImporto;
+      }
 
-      // 6. Recupero IDPROGRESSIVOGENERALE generato dal contatore
-      const identityRes = await connection.query(`SELECT @@IDENTITY AS ID`);
-      const idProgressivoGenerale = (identityRes.length > 0 && identityRes[0].ID) ? parseInt(identityRes[0].ID, 10) : 0;
+      const idDettagliCreati = [];
+      let sumDettagli = 0;
 
-      // 7. Se è collegato a un incasso esistente in [G-01-T-INCASSI], aggiorniamo lo stato
-      if (parsedIdPagamento > 0) {
-        let sqlUpdateG01 = `
-          UPDATE [G-01-T-INCASSI]
-          SET 
-            INCASSATA = 'SI',
-            DATAPAGAMENTO = #${dateValutaFmt}#,
-            CAUSALECHIUSURAINCASSO = ${parsedCausaleChiusura},
-            IDMOVIMENTOBANCA = ${idProgressivoGenerale}
+      if (fattureList.length > 0) {
+        for (const f of fattureList) {
+          const sqlInsertI02 = `
+            INSERT INTO [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] (
+              IDMOVIMENTOGENERALE,
+              IDMOVIMENTO,
+              IDCLIENTE,
+              IDFATTURA,
+              IDFORNITORE,
+              IDFATTURAFORNITORE,
+              ENTRATE,
+              [ENTRATE€],
+              USCITE,
+              [USCITE€],
+              CAUSALEUSCITABANCA,
+              IDPAGAMENTO,
+              CONTROLLOESEGUITO,
+              SELEZIONATO
+            ) VALUES (
+              ${nextIdMovGenerale},
+              ${nextIdMovimento},
+              ${parsedIdCaf},
+              ${f.numeroFattura},
+              0,
+              0,
+              0,
+              ${f.importo},
+              0,
+              0,
+              ${defaultCausaleUscita},
+              ${f.idPagamento},
+              0,
+              0
+            )
+          `;
+          await connection.query(sqlInsertI02);
+          const identityRes = await connection.query(`SELECT @@IDENTITY AS ID`);
+          const idProgressivoGenerale = (identityRes.length > 0 && identityRes[0].ID) ? parseInt(identityRes[0].ID, 10) : 0;
+          idDettagliCreati.push({
+            idProgressivoGenerale,
+            idPagamento: f.idPagamento,
+            numeroFattura: f.numeroFattura,
+            importo: f.importo
+          });
+          sumDettagli += f.importo;
+
+          // Se collegato a un incasso esistente in [G-01-T-INCASSI], aggiorniamo lo stato
+          if (f.idPagamento > 0) {
+            let sqlUpdateG01 = `
+              UPDATE [G-01-T-INCASSI]
+              SET 
+                INCASSATA = 'SI',
+                DATAPAGAMENTO = #${dateValutaFmt}#,
+                CAUSALECHIUSURAINCASSO = ${f.causaleChiusura},
+                IDMOVIMENTOBANCA = ${idProgressivoGenerale}
+            `;
+            if (finalModoId) {
+              sqlUpdateG01 += `, ID5MODOPAGAMENTO = ${finalModoId}, [5MODOPAGAMENTO] = '${finalModoDesc}'`;
+            }
+            if (f.causaleChiusura === 5) {
+              sqlUpdateG01 += `, PAGATOPARZIALMENTE = 1, CIFRAPAGAMENTOPARZIALE = ${f.importo}`;
+            }
+            sqlUpdateG01 += ` WHERE [ID PAGAMENTO] = ${f.idPagamento}`;
+
+            await connection.query(sqlUpdateG01);
+          }
+        }
+
+        // Se l'importo totale del movimento supera la somma delle fatture inserite (es. residuo non allocato o acconto)
+        const resto = Math.round((parsedImporto - sumDettagli) * 100) / 100;
+        if (resto > 0.009) {
+          const sqlInsertResto = `
+            INSERT INTO [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] (
+              IDMOVIMENTOGENERALE,
+              IDMOVIMENTO,
+              IDCLIENTE,
+              IDFATTURA,
+              IDFORNITORE,
+              IDFATTURAFORNITORE,
+              ENTRATE,
+              [ENTRATE€],
+              USCITE,
+              [USCITE€],
+              CAUSALEUSCITABANCA,
+              IDPAGAMENTO,
+              CONTROLLOESEGUITO,
+              SELEZIONATO
+            ) VALUES (
+              ${nextIdMovGenerale},
+              ${nextIdMovimento},
+              ${parsedIdCaf},
+              0,
+              0,
+              0,
+              0,
+              ${resto},
+              0,
+              0,
+              ${defaultCausaleUscita},
+              0,
+              0,
+              0
+            )
+          `;
+          await connection.query(sqlInsertResto);
+          const identityRes = await connection.query(`SELECT @@IDENTITY AS ID`);
+          const idProgResto = (identityRes.length > 0 && identityRes[0].ID) ? parseInt(identityRes[0].ID, 10) : 0;
+          idDettagliCreati.push({
+            idProgressivoGenerale: idProgResto,
+            idPagamento: 0,
+            numeroFattura: 0,
+            importo: resto
+          });
+        }
+      } else {
+        // Incasso Diretto senza fatture collegate
+        const parsedNumFattura = numeroFattura ? parseInt(numeroFattura, 10) : 0;
+        const sqlInsertI02 = `
+          INSERT INTO [I-02-T-TUTTIDETTAGLIMOVIMENTIBANCA] (
+            IDMOVIMENTOGENERALE,
+            IDMOVIMENTO,
+            IDCLIENTE,
+            IDFATTURA,
+            IDFORNITORE,
+            IDFATTURAFORNITORE,
+            ENTRATE,
+            [ENTRATE€],
+            USCITE,
+            [USCITE€],
+            CAUSALEUSCITABANCA,
+            IDPAGAMENTO,
+            CONTROLLOESEGUITO,
+            SELEZIONATO
+          ) VALUES (
+            ${nextIdMovGenerale},
+            ${nextIdMovimento},
+            ${parsedIdCaf},
+            ${parsedNumFattura},
+            0,
+            0,
+            0,
+            ${parsedImporto},
+            0,
+            0,
+            ${defaultCausaleUscita},
+            0,
+            0,
+            0
+          )
         `;
-        if (finalModoId) {
-          sqlUpdateG01 += `, ID5MODOPAGAMENTO = ${finalModoId}, [5MODOPAGAMENTO] = '${finalModoDesc}'`;
-        }
-        if (parsedCausaleChiusura === 5) {
-          sqlUpdateG01 += `, PAGATOPARZIALMENTE = 1, CIFRAPAGAMENTOPARZIALE = ${parsedImporto}`;
-        }
-        sqlUpdateG01 += ` WHERE [ID PAGAMENTO] = ${parsedIdPagamento}`;
-
-        await connection.query(sqlUpdateG01);
+        await connection.query(sqlInsertI02);
+        const identityRes = await connection.query(`SELECT @@IDENTITY AS ID`);
+        const idProgressivoGenerale = (identityRes.length > 0 && identityRes[0].ID) ? parseInt(identityRes[0].ID, 10) : 0;
+        idDettagliCreati.push({
+          idProgressivoGenerale,
+          idPagamento: 0,
+          numeroFattura: parsedNumFattura,
+          importo: parsedImporto
+        });
       }
 
       await connection.commit();
@@ -1299,8 +1426,11 @@ router.post("/banca/incassi", async (req, res) => {
         dati: {
           idMovimentoGenerale: nextIdMovGenerale,
           idMovimento: nextIdMovimento,
-          idDettaglio: idProgressivoGenerale,
-          idPagamento: parsedIdPagamento,
+          idDettaglio: idDettagliCreati[0] ? idDettagliCreati[0].idProgressivoGenerale : 0,
+          idDettagli: idDettagliCreati,
+          dettagliCount: idDettagliCreati.length,
+          idPagamento: fattureList.length === 1 ? fattureList[0].idPagamento : 0,
+          fattureCollegate: fattureList.map(f => f.numeroFattura).filter(Boolean),
           idConto: parsedIdConto,
           importo: parsedImporto,
           saldoAggiornato: newSaldo
