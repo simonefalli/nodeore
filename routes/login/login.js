@@ -6,7 +6,7 @@ const secretKey = process.env.JWT_SECRET || "ilTuoSegretoSuperSicuroIngegneriaeS
 
 router.post("/", (req, res) => {
     utente = req.body.utente;
-    password = req.body.password;
+    password = req.body.passwordz;
   
     pool.getConnection((err, connection) => {
       if (err) throw err;
